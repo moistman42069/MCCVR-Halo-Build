@@ -269,8 +269,11 @@ void TestPublicationIsAllOrNothing()
     std::thread reader([&] {
         while (!started.load(std::memory_order_acquire))
             std::this_thread::yield();
-        do
+        for (;;)
         {
+            // Observe completion before reading, so the final attempt cannot
+            // race the last write and then exit without reading its result.
+            const bool finished = done.load(std::memory_order_acquire);
             committed_aim::Sample observed{};
             if (publication.TryRead(observed))
             {
@@ -278,7 +281,8 @@ void TestPublicationIsAllOrNothing()
                 if (!ConsistentSerial(observed))
                     hybridReads.fetch_add(1, std::memory_order_relaxed);
             }
-        } while (!done.load(std::memory_order_acquire));
+            if (finished) break;
+        }
     });
     writer.join();
     reader.join();

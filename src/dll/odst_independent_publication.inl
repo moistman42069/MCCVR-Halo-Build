@@ -4,7 +4,7 @@ void PublishOdstIndependentAimBody()
 {
     if constexpr(!kEnableOdstIndependentAim)return;
     auto& feature=g_odstMuzzle;
-    if(!feature.enabled.load()||feature.faulted.load()||!g_config.independent_dual_aim||
+    if(!feature.enabled.load()||feature.faulted.load()||!Sight_IndependentDualAim()||
         !g_vrAim.load()||!g_enabled.load()||!g_baseCamValid.load()||
         feature.generation!=g_odstRuntimeGeneration.load())return;
     __try
@@ -26,7 +26,7 @@ void PublishOdstIndependentAimBody()
         if(!std::isfinite(scale)||scale<=0)return;
         const float sh=sinf(g_headYawRef),ch=cosf(g_headYawRef);
         const float cg=cosf(g_gameYawRef),sg=sinf(g_gameYawRef);
-        const float base[3]{g_baseCamX.load(),g_baseCamY.load(),g_baseCamZ.load()};
+        const float base[3]{g_baseCamX.load(),g_baseCamY.load(),BaseCamHandsZ()};
         for(int slot=0;slot<2;++slot)
         {
             // Tracking is already routed into primary/support roles by VR.

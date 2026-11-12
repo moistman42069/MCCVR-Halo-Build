@@ -1,3 +1,4 @@
+#include "game_tls.h"
 // H3EK A3ABE0 and retail 343D74 independently establish this six-argument
 // resolver and its 0x70 marker/world-matrix layout. It is not H2's wrapper ABI.
 using Halo3MuzzleMarkersFn=uint64_t(__fastcall*)(uint32_t,uint32_t,void*,int16_t,uint8_t,uint8_t);
@@ -26,7 +27,7 @@ bool ApplyHalo3MuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t
 {
     auto& feature=g_halo3Muzzle;
     const auto request=g_halo3MuzzleRequest;
-    if(!feature.enabled.load() || feature.faulted.load() || !g_config.gun_barrel_aim ||
+    if(!feature.enabled.load() || feature.faulted.load() || !(Sight_GunBarrelAim()||Sight_MuzzleShotsConverge()) ||
         !g_halo3Dual.enabled.load() || g_halo3Dual.faulted.load() || exclusive_input::Active() ||
         !g_vrAim.load() || !g_enabled.load() || !VR_IsStereoEnabled() ||
         TitleAdapter_GetActiveTitle()!=GameTitle::Halo3 ||
@@ -50,6 +51,8 @@ bool ApplyHalo3MuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t
     // output keeps this preflight separate from the ordinary firing call.
     float velocity[3]{},direction[3]{};
     std::memcpy(direction,muzzle.ray.direction,12);
+    float before[3]{};
+    std::memcpy(before,muzzle.ray.position,12);
     const bool previousCollisionQuery=g_legacyCollisionOwnedQuery;
     g_legacyCollisionOwnedQuery=true;
     __try
@@ -60,6 +63,25 @@ bool ApplyHalo3MuzzleMarker(uint32_t object,uint64_t count,void* markers,int16_t
     __finally {g_legacyCollisionOwnedQuery=previousCollisionQuery;}
     for(int axis=0;axis<3;++axis)
         if(!std::isfinite(muzzle.ray.position[axis])||!std::isfinite(direction[axis]))return false;
+    // Project Reclaimer 0.10 fires from its own version of the fire routine, which takes the round's direction from
+    // this marker but starts the round at the eye the game aims from, not at the marker: in FA, with the head 0.4 m
+    // off the body (roomscale off), rounds flew the muzzle's line from the eye and missed the point by 0.9 m. There
+    // the shot is aimed from that eye (the evaluator's, which is the engine camera) through the converged point.
+    if(lifted::Active() && !Sight_GunBarrelAim()) {
+        float eye[3]{},eyeVelocity[3]{};bool eyeVelocityValid=false;uint64_t eyeStampUs=0;int32_t eyeUnit=-1;
+        if(!ReadHalo3TickEye(g_halo3RuntimeGeneration.load(),100000,eye,eyeVelocity,eyeVelocityValid,eyeStampUs,
+            &eyeUnit) || eyeUnit!=static_cast<int32_t>(context.unit))return false;
+        std::memcpy(before,eye,12);
+        std::memcpy(muzzle.ray.position,eye,12);
+    }
+    // SHOTS FROM THE MUZZLE (sight_layer.h): keep the origin the obstruction check left, but fly through the
+    // converged point instead of along the barrel. A refusal refuses the barrel shot: it leaves the eye.
+    // The second gun under independent dual aim follows its own controller (the shot that lane prepared).
+    // A seat held at its stop or a turret (unit_in_vehicle reads false there) refuses it: SeatMuzzleShotHeld.
+    if(!Sight_GunBarrelAim() &&
+        ((slot==1&&Sight_IndependentDualAim()) || SeatMuzzleShotHeld(GameTitle::Halo3) ||
+         !Sight_AimMuzzleShot(GameTitle::Halo3,TitleAdapter_GetGeneration(GameTitle::Halo3),
+            before,muzzle.ray.position,muzzle.ray.direction,muzzle.ray.up)))return false;
     if(!AcquireHalo3IndependentShot(request.weapon,*request.lease,&muzzle))return false;
     auto* bytes=static_cast<uint8_t*>(markers);
     const auto& ray=muzzle.ray;
@@ -83,7 +105,7 @@ __declspec(noinline) uint64_t __fastcall Halo3MuzzleMarkersDetour(
     {
         if(!feature.original)__leave;
         result=feature.original(object,name,markers,capacity,originalObject,interpolated);
-        if(reinterpret_cast<uintptr_t>(_ReturnAddress())!=feature.base+0x368651 ||
+        if(HALOMCCVR_GAME_RETURN_ADDRESS()!=feature.base+0x368651 ||
             !g_halo3MuzzleRequest.lease)__leave;
         const auto previous=g_halo3IndependentShot;
         bool applied=false;

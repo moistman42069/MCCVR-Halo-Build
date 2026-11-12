@@ -2,12 +2,15 @@
 // These verify palette receipt admission and unchanged-output fallback, not
 // game draw visibility. Actual native CPU/GPU consumers have a separate test.
 #include "../src/dll/haloce_first_person.cpp"
+#include "../src/common/config.h"
 #include <cstdio>
 #include <thread>
 #include <cstdlib>
 
 Config::Config() {}
 Config g_config;
+void Game_PublishAuthoredGrip(GameTitle,uint32_t,uint32_t,uint32_t,const void*,const void*,const void*,const float*,float,bool) {}
+
 
 static GameTitle testTitle=GameTitle::HaloCE;
 static uint32_t testGeneration=3;
@@ -27,6 +30,8 @@ static float lensArgument{};
 static unsigned prepareCalls{};
 static unsigned quiescenceCalls{},quiescenceRanges{};
 static size_t blockedQuiescenceCount{};
+static unsigned blockedQuiescenceCall{};   // 1-based: that call refuses (0 = none)
+static bool skinEntriesSplit{};            // the skin thunk and its C++ entry checked in different freezes
 static uintptr_t visibilityListAddress{},visibilityModelAddress{};
 static bool visibilityListValid=true,visibilityExpectPrivate{},visibilityNativeChecks=true,visibilityFault{};
 static unsigned visibilityListReads{},visibilityRevokeOnRead{},visibilityNativeCalls{};
@@ -100,6 +105,7 @@ uintptr_t __fastcall ContactGraphFixture(uint32_t graph)
 { return graph==25?contactGraphDefinition:0; }
 GameTitle TitleAdapter_GetActiveTitle() { return testTitle; }
 uint32_t TitleAdapter_GetGeneration(GameTitle) { return testGeneration; }
+// g_config (above) also serves the sight layer, which reads converged_aim (its default, on).
 bool HaloCE_Armed() noexcept { return testTitle==GameTitle::HaloCE; }
 bool HaloCE_GetRenderContext(const halo_ce::Camera&,halo_ce::RenderContext& result) noexcept
 { result=testContext;return contextValid&&renderContextValid; }
@@ -150,6 +156,11 @@ void HaloCE_RecordAnniversaryVisibilitySubmission(uintptr_t list,int32_t phase,u
 }
 bool HaloCEControls_GetLocalPlayerState(HaloCELocalPlayerState& state) noexcept
 {state=targetPlayer;return targetPlayerValid;}
+// Seat convergence: the seat's solve belongs to the unit-control lane (its own fixture covers it).
+static HaloCESeatAim seatAimFixture{};
+static bool seatAimSolved{};
+bool HaloCEUnitControl_SeatAim(uint32_t unit,HaloCESeatAim& out) noexcept
+{ if(!seatAimSolved||unit!=seatAimFixture.sight.unit)return false;out=seatAimFixture;return true; }
 uint8_t __fastcall NativeTargetFixture(const void* parameters,const halo_ce::Vec3* origin,
     const halo_ce::Vec3* direction,uint32_t unit,uint16_t team,void* result)
 {
@@ -170,7 +181,15 @@ bool WaitForNativeDetourQuiescence(const void* const* functions,const void* cons
     const std::atomic<uint32_t>& activeCallbacks)
 {
     ++quiescenceCalls;quiescenceRanges+=unsigned(count);
-    return functions&&trampolines&&count&&count<=8&&count!=blockedQuiescenceCount&&!activeCallbacks.load();
+    bool enter=false,thunk=false;
+    for (size_t i=0;functions&&i<count;++i)
+    {
+        enter|=functions[i]==reinterpret_cast<const void*>(&HaloCeSkinConvertEnter);
+        thunk|=functions[i]==reinterpret_cast<const void*>(&HaloCeSkinConvertThunk);
+    }
+    skinEntriesSplit|=enter!=thunk;
+    return functions&&trampolines&&count&&count<=8&&count!=blockedQuiescenceCount&&
+        quiescenceCalls!=blockedQuiescenceCall&&!activeCallbacks.load();
 }
 // The outermost prepare freezes this invocation's local context before it
 // calls the native original. Capture that exact frozen scope so the
@@ -316,7 +335,8 @@ static bool CheckContactPaletteCommit()
         contactRejectOwnership=failure==1;contactRejectCopy=failure==2;
         const unsigned commits=contactCommits,stages=contactStages;
         const Scope owner{testContext,contactNativePalette,true};
-        const bool accepted=ApplyPalette(25,contactNativePalette,owner);
+        // This contact transaction fixture has no native animation owner/root.
+        const bool accepted=ApplyPalette(25,contactNativePalette,owner,nullptr);
         if (contactRejectCopy) VirtualProtect(contactNativePalette,4096,PAGE_READWRITE,&protection);
         contextValid=true;
         checks&=accepted==(failure==0)&&contactStages==stages+1&&contactCommits==commits+(failure==0);
@@ -332,6 +352,8 @@ static bool CheckContactPaletteCommit()
 int main(int argc,char** argv)
 {
     using namespace halo_ce;
+    // The fire-time paths below act only while one-machine changes are allowed (co-op safe shots off).
+    g_config.coop_safe_shots=false;
     installed=true;active=true;retiring=false;generation=testGeneration;
     prepareHook.original=reinterpret_cast<void*>(&NativePrepareFixture);
     testContext.tracking.generation=testGeneration;testContext.tracking.spaceEpoch=4;testContext.tracking.serial=12;
@@ -507,6 +529,52 @@ int main(int argc,char** argv)
             targetPlayer=savedTargetPlayer;targetPlayerValid=savedTargetPlayerValid;
             supportRelationship=savedRelationship;supportRelationshipValid=savedRelationshipValid;
             supportWired=false;
+        }
+        {
+            // SEAT CONVERGENCE, the fire's half (seat_converge_logic.h): at a local seat's fire the engine's own
+            // crosshair line -- the director's deterministic camera -- is re-aimed, from its own position, through
+            // the seat's converged point; only that call, only our seated biped, only while the seat's aim converged.
+            static const auto director=+[](uint32_t,Vec3* position,Vec3* direction)->int16_t
+            { *position={1,2,3};*direction={.6f,.8f,0};return int16_t(0); };
+            const auto savedPlayer=targetPlayer;const bool savedValid=targetPlayerValid;
+            const auto savedAssist=assistRayHook.original;
+            assistRayHook.original=reinterpret_cast<void*>(director);
+            targetPlayer={};targetPlayer.generation=testGeneration;targetPlayer.unit=0x12340002u;
+            targetPlayer.parent=0x34560009u;targetPlayer.hasControlledUnit=true;targetPlayer.onFoot=false;
+            targetPlayer.nativeInputBlocked=targetPlayer.nativeLookBlocked=false;targetPlayerValid=true;
+            seatAimFixture={};seatAimFixture.why=seat_converge::Why::Converged;
+            seatAimFixture.sight.unit=targetPlayer.unit;seatAimFixture.sight.parent=targetPlayer.parent;
+            seatAimFixture.sight.seat=1;seatAimFixture.sight.key=seat_converge::StanceKey(targetPlayer.parent,1);
+            seatAimFixture.sight.role.known=seatAimFixture.sight.role.gunner=true;
+            seatAimFixture.point[0]=1;seatAimFixture.point[1]=12;seatAimFixture.point[2]=3;
+            seatAimSolved=true;
+            Vec3 position{},direction{};
+            // Before the seat's aim converged: the director's answer stays the game's.
+            CHECK(AssistRayBody(targetPlayer.unit,&position,&direction,moduleBase+0xb67be4)==0);
+            CHECK(Dot(direction,Vec3{.6f,.8f,0})>.9999f);
+            Sight_NoteSeatPoll(GameTitle::HaloCE,seatAimFixture.sight.key,seatAimFixture.sight.role,
+                seat_converge::Why::Converged);
+            CHECK(AssistRayBody(targetPlayer.unit,&position,&direction,moduleBase+0xb67be4)==0);
+            CHECK(Dot(position-Vec3{1,2,3},position-Vec3{1,2,3})<1e-9f);
+            CHECK(Dot(direction,Vec3{0,1,0})>.9999f);
+            // Co-op safe shots: the same converged seat's ray is left as the game built it.
+            g_config.coop_safe_shots=true;
+            CHECK(AssistRayBody(targetPlayer.unit,&position,&direction,moduleBase+0xb67be4)==0);
+            CHECK(Dot(direction,Vec3{.6f,.8f,0})>.9999f);
+            g_config.coop_safe_shots=false;
+            // Another caller of the director, and another seat than the converged one: untouched.
+            CHECK(AssistRayBody(targetPlayer.unit,&position,&direction,moduleBase+1)==0);
+            CHECK(Dot(direction,Vec3{.6f,.8f,0})>.9999f);
+            seatAimFixture.sight.key^=0x10u;
+            CHECK(AssistRayBody(targetPlayer.unit,&position,&direction,moduleBase+0xb67be4)==0);
+            CHECK(Dot(direction,Vec3{.6f,.8f,0})>.9999f);
+            // The same evaluator is the seat's engine eye for the unit-control lane.
+            int perspective=-1;float eye[3]{};
+            CHECK(HaloCEFirstPerson_SeatEye(targetPlayer.unit,eye,perspective)==1&&perspective==0&&eye[1]==2.0f);
+            assistRayHook.original=nullptr;
+            CHECK(HaloCEFirstPerson_SeatEye(targetPlayer.unit,eye,perspective)==0);
+            seatAimSolved=false;assistRayHook.original=savedAssist;
+            targetPlayer=savedPlayer;targetPlayerValid=savedValid;
         }
         gameplayValid=true;targetPlayer={};targetPlayerValid=false;
         targetFault=true;const auto before=targetNativeCalls;
@@ -1014,15 +1082,16 @@ int main(int argc,char** argv)
         CHECK(!DiagnosticCeStableCommit(before,true,after,false));
     }
     RunCeMuzzleTests();
-    quiescenceCalls=quiescenceRanges=0;
-    blockedQuiescenceCount=7;
+    quiescenceCalls=quiescenceRanges=0;skinEntriesSplit=false;
+    blockedQuiescenceCall=2;   // the second batch refuses: everything stays retained
     CHECK(!Remove());CHECK(retiring.load()&&generation.load()==testGeneration);
     CHECK(prepareHook.original==reinterpret_cast<void*>(&NativePrepareFixture));
-    CHECK(quiescenceCalls==2&&quiescenceRanges==15);
-    blockedQuiescenceCount=0;quiescenceCalls=quiescenceRanges=0;
+    CHECK(quiescenceCalls==2&&quiescenceRanges==16);
+    blockedQuiescenceCall=0;quiescenceCalls=quiescenceRanges=0;
     CHECK(Remove());CHECK(!retiring.load()&&!generation.load()&&!prepareHook.original);
-    CHECK(quiescenceCalls==2&&quiescenceRanges==15);
+    CHECK(quiescenceCalls==2&&quiescenceRanges==16);   // 15 hooks + the skin hook's asm entry, 8 + 8
+    CHECK(!skinEntriesSplit);   // the skin thunk and its C++ entry were always checked in one freeze
     CHECK(VirtualFree(native,0,MEM_RELEASE));
-    std::puts("PASS production CE first-person receipt: Classic/Anniversary projection, continuous controller targeting, isolated particles, visibility, recovery and fifteen-hook retirement");
+    std::puts("PASS production CE first-person receipt: Classic/Anniversary projection, continuous controller targeting, isolated particles, visibility, recovery and fifteen-hook retirement (plus the skin hook's asm thunk)");
     return 0;
 }

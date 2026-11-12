@@ -6,6 +6,7 @@
 #include <cstring>
 #include <vector>
 #include "../src/common/runtime_types.h"
+#include "../src/common/vr_action_mapping.h"
 
 namespace {
 #include "../src/dll/gesture_binding_reader.inl"
@@ -78,6 +79,12 @@ int main()
                 transport,d.action),"unbound/malformed binding has no memory fault");
             for(auto value:transport) Check(value==0,"unbound/malformed binding emits no input");
         }
+        // The extra rows read the same table: each game's action for each lies inside it, where the game has one.
+        for(unsigned a=0;a<vr_mapping::ExtraCount;++a) {
+            const unsigned native=vr_mapping::NativeExtraAction(d.title,static_cast<vr_mapping::ExtraAction>(a));
+            Check(native==vr_mapping::kNoAction||native<d.actionCount,
+                "an extra row's action lies inside its game's binding table");
+        }
         uint32_t unavailable[4]{};
         Check(GestureReadNativeBindings(d,0,unavailable,d.actionCount),
             "unsupported action does not read game memory");
@@ -90,6 +97,22 @@ int main()
             Check(GestureReadNativeBindings(d,reinterpret_cast<uintptr_t>(memory.data()),
                 transport,d.action)&&transport[0]==0&&transport[1]!=0,
                 "mismatched preference owner rejects only that controller");
+        }
+        {
+            // A level's end: the player's row reads all zero, every action on button 0 (LT).
+            std::vector<uint8_t> row(4*d.stride+0x200,0);
+            for(unsigned c=0;c<4;++c) SetBinding(d,row,c,0,0);
+            const auto at=reinterpret_cast<uintptr_t>(row.data());
+            const bool dword=d.title!=GameTitle::HaloCE&&d.title!=GameTitle::Halo2;
+            Check(GestureRowCleared(d,at,0)==dword&&GestureRowCleared(d,at,1)==dword,
+                "an all-zero row is cleared where the layout is a dword table, never guessed elsewhere");
+            SetBinding(d,row,0,d.actionCount-1,10);
+            Check(!GestureRowCleared(d,at,0)&&GestureRowCleared(d,at,1)==dword,"one bound action is a real row");
+            if(dword) {
+                Put<uint32_t>(row,1*d.stride+d.controllerOffset,3);
+                Check(!GestureRowCleared(d,at,1),"a row another controller owns is not this one's");
+            }
+            Check(!GestureRowCleared(d,0,0),"an unreadable row is not called cleared");
         }
         if(d.title==GameTitle::Halo2) {
             for(int badCount:{-1,0,9}) {

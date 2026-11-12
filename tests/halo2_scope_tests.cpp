@@ -26,7 +26,8 @@ namespace anniversary
 {
 static unsigned char state[0x200],expected[sizeof(state)],savedContext[kHalo2SaberSceneContextResetBytes],recordBytes[0x800];
 static int32_t savedLatch=17,latch=31;
-static bool applyOk=true;
+static bool applyOk=true,slotsIntact=true;
+static bool ViewSlotsIntact(uintptr_t){return slotsIntact;}
 static bool ReadGuarded(uintptr_t at,float& out){memcpy(&out,reinterpret_cast<void*>(at),4);Phase();return true;}
 static bool ApplyEyeCamera(uintptr_t record,const Halo2CameraBasis& camera,int,const Halo2SaberEyeCover& cover)
 {
@@ -45,21 +46,26 @@ static void Run(bool ok=true,bool haveLatch=true)
     const uintptr_t base=reinterpret_cast<uintptr_t>(&latch)-kHalo2SaberSceneOnceLatchRva;
     void* ctx=state;uintptr_t record=reinterpret_cast<uintptr_t>(recordBytes),rdx=3;int viewIndex=0,constants=0;
     Halo2SaberEyeCover cover{};auto original=&Native;
+    // The fixture's faults are RaiseException (kernelbase), so it keeps the
+    // contain-everything filter; the GameFault decision has its own tests.
+    const uintptr_t faultAnchor=0;(void)faultAnchor;
+#define GameFault(anchor) EXCEPTION_EXECUTE_HANDLER
 #include "../src/dll/halo2_anniversary_scope_pass.inl"
+#undef GameFault
     Check(!memcmp(state,expected,sizeof(state)),"third pass restores exact post-eye context including exterior sentinels");
     Check(!active&&!scopeFlag,"optional flags end even after exception");
 }
 static void Reset()
 {
     for(size_t i=0;i<sizeof(state);++i)state[i]=expected[i]=static_cast<unsigned char>(i*19+7);
-    memset(savedContext,0xBC,sizeof(savedContext));latch=31;applyOk=true;
+    memset(savedContext,0xBC,sizeof(savedContext));latch=31;applyOk=true;slotsIntact=true;
 }
 }
 namespace classic
 {
 struct StereoScope
 {
-    uint8_t completedEyeMask=3;bool invalidated=false;uint32_t generation=7;uint64_t serial=99;
+    uint8_t completedEyeMask=3;bool invalidated=false;bool mono=false;uint32_t generation=7;uint64_t serial=99;
     struct {Halo2CameraBasis render,raster;}eyes[2];
     float renderCoverVerticalFov{},rasterCoverVerticalFov{};
     bool sceneTargetLatchValid=true;uint8_t sceneTargetLatch=17;
@@ -85,9 +91,13 @@ static bool ReadEngineProjection(StereoScope& scope,int)
 static void Native(uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,
     uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t,uintptr_t)
 {++draws;memset(cameraBytes,0xDA,sizeof(cameraBytes));latch=91;Phase();}
-static void Run(bool eligible=true)
+static void Run(bool eligible=true,bool mono=false,int first=0)
 {
-    StereoScope owned{};auto* scope=&owned;if(!eligible)scope->completedEyeMask=1;
+    // A mono frame is one pass, as the eye drawn first: that eye alone completes it.
+    StereoScope owned{};auto* scope=&owned;scope->mono=mono;
+    const uint8_t firstMask=static_cast<uint8_t>(1u<<first);
+    if(mono)scope->completedEyeMask=eligible?firstMask:0;else if(!eligible)scope->completedEyeMask=1;
+    const int firstEye=first;
     const uintptr_t moduleBase=reinterpret_cast<uintptr_t>(&latch)-kHalo2ClassicSceneTargetLatchRva;
     auto original=&Native;
     uintptr_t argument01=1,argument02=2,argument03=3,argument04=4,argument05=5,argument06=6,argument07=7,
@@ -96,7 +106,8 @@ static void Run(bool eligible=true)
 #include "../src/dll/halo2_classic_scope_pass.inl"
     Check(latch==31&&!memcmp(cameraBytes,savedCamera,sizeof(cameraBytes)),"classic optional camera and prior latch restore exactly");
     Check(!active&&!scopeFlag,"classic optional flags end even after exception");
-    Check(scope->completedEyeMask==(eligible?3:1)&&!scope->invalidated,"optional faults preserve completed real eyes");
+    Check(scope->completedEyeMask==(mono?(eligible?firstMask:0):(eligible?3:1))&&!scope->invalidated,
+        "optional faults preserve completed real eyes");
 }
 static void Reset(){latch=31;memset(cameraBytes,0xC3,sizeof(cameraBytes));memcpy(savedCamera,cameraBytes,sizeof(cameraBytes));writeOk=restoreOk=true;}
 }
@@ -121,7 +132,11 @@ int main()
         }
     }
     Reset();classic::Run(false);Check(!draws&&!ends,"incomplete real pair cannot start lens");
+    Reset();classic::Run(true,true);Check(draws==1&&ends==1&&image,"a mono frame's one completed eye starts the lens");
+    Reset();classic::Run(false,true);Check(!draws&&!ends,"a mono frame whose one eye did not complete cannot start lens");
+    Reset();classic::Run(true,true,1);Check(draws==1&&ends==1&&image,"a mono frame drawn as the right eye starts the lens");
     Reset();anniversary::Run(false);Check(!draws&&!ends,"failed Anniversary real pair cannot start lens");
     Reset();anniversary::Run(true,false);Check(!draws&&!ends,"missing native latch refuses optional pass");
+    Reset();anniversary::slotsIntact=false;anniversary::Run();Check(!draws&&!ends,"an emptied view slot refuses the optional pass");
     printf("Halo 2 scope: %u checks passed\n",checks);
 }

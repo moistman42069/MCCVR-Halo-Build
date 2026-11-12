@@ -25,6 +25,10 @@ static float nativeInk=1;
 bool HaloCE_HudTargetBindingsVerified(uintptr_t base,size_t size,uint32_t gen) noexcept
 { return coldTargetProof&&base==moduleBase&&size==halo_ce::contract::imageSize&&gen==testGeneration; }
 bool HaloCEFirstPerson_AimArmed() noexcept { return aimAvailable; }
+// Aim Frame Zoom (game.cpp): a frame's pass draws the game's crosshair as it is; the capture waits while zoomed.
+static bool aimFramePass{},crosshairReadyForCapture=true;
+bool Game_IsAimFramePass() { return aimFramePass; }
+bool Game_AimFrameCrosshairReadyForCapture(GameTitle) { return crosshairReadyForCapture; }
 bool HaloCEFirstPerson_GetLocalPlayerState(HaloCELocalPlayerState& state) noexcept
 {
     state.hasControlledUnit=playerEligible;
@@ -57,9 +61,11 @@ AuthoredReticlePreparationResult VR_PrepareAuthoredReticleResources()
 bool VR_PrepareAuthoredReticleSuppressionResources() { return suppressionReady; }
 bool VR_ShouldCaptureAuthoredReticleThisFrame()
 { return halo_ce::ReticleCanReplaceCapture(coveragePending); }
+static float currentLift{},liftAtBegin{-1.0f};
+void VR_SetCeAuthoredReticleLift(float lift) { currentLift=lift; }
 bool VR_BeginPreparedAuthoredReticleCapture()
 {
-    ++captureBegins;
+    ++captureBegins;liftAtBegin=currentLift;
     if (!beginAllowed||redirectActive) return false;
     redirectActive=redirectAuthored=true;return true;
 }
@@ -90,6 +96,10 @@ static void __fastcall NativeCrosshair(int32_t user,uint32_t weapon,uint32_t hud
     if (changeRevision) ++testContext.referenceRevision;
     if (raiseNative) RaiseException(0xe0424242,0,0,nullptr);
 }
+static unsigned seatElementCalls{},seatSuspensionAtCall{};
+static bool seatDrewIntoCapture{};
+static void __fastcall NativeSeatElement(uint64_t,const int16_t*,const uint8_t*,uint64_t,uint64_t,uint64_t)
+{ ++seatElementCalls;seatSuspensionAtCall=layoutSuspensions;seatDrewIntoCapture=redirectActive; }
 static bool ExceptionPassesThrough()
 {
     __try { CrosshairHook(0,17,29,nullptr); }
@@ -313,6 +323,47 @@ int main()
         pixelCapture->Release();pixelDiscard->Release();source->Release();discard->Release();
         queued->Release();readback->Release();pixelContext->Release();device->Release();
         pixelContext=nullptr;pixelCapture=pixelDiscard=nullptr;
+    }
+    {
+        // THE DRIVER'S CHEVRON: only the unit HUD's background call, for a centre-anchored background, while seated.
+        int16_t unitHud[0x40]{};unitHud[0]=4;
+        const auto* element=reinterpret_cast<const uint8_t*>(unitHud)+0x24;
+        const uintptr_t backgroundCall=moduleBase+0xc50e2c;
+        seatOriginal=&NativeSeatElement;
+        const auto seatDraw=[&](uintptr_t caller,const uint8_t* art)
+        { SeatReticleBody(caller,0,unitHud,art,0,~0ull,0); };
+        seated=true;displayedSerial=++testContext.tracking.serial;
+        const unsigned beginsBefore=captureBegins,suppressBefore=suppressionBegins;
+        seatDraw(backgroundCall+5,element);
+        check(seatElementCalls==1&&!seatSuspensionAtCall&&captureBegins==beginsBefore,
+            "another static-element call site draws as it is, inside the HUD's framing");
+        unitHud[0]=0;seatDraw(backgroundCall,element);unitHud[0]=4;
+        check(seatElementCalls==2&&!seatSuspensionAtCall&&captureBegins==beginsBefore,
+            "a corner-anchored background is a HUD panel, not a reticle");
+        seatDraw(backgroundCall,element+4);
+        check(seatElementCalls==3&&!seatSuspensionAtCall&&captureBegins==beginsBefore,
+            "an element other than the background draws as it is");
+        aimFramePass=true;seatDraw(backgroundCall,element);aimFramePass=false;
+        check(seatElementCalls==4&&!seatSuspensionAtCall&&captureBegins==beginsBefore&&suppressionBegins==suppressBefore,
+            "a zoomed frame draws the chevron into its own picture");
+        const auto seatBefore=seatCaptures.load();
+        seatDraw(backgroundCall,element);
+        const auto chevronKey=HaloCEHud_CrosshairKey();
+        const bool firstIntoCapture=seatDrewIntoCapture&&seatSuspensionAtCall>0;
+        const float firstLift=liftAtBegin;
+        seatDraw(backgroundCall,element);
+        check(seatElementCalls==6&&firstIntoCapture&&captureBegins==beginsBefore+1&&
+            suppressionBegins==suppressBefore+1&&chevronKey&&HaloCEHud_CrosshairKey()==chevronKey&&
+            seatCaptures.load()==seatBefore+2&&firstLift==40.0f/960.0f&&currentLift==0.0f&&
+            !layoutSuspensions&&!redirectActive&&!callbacks.load(),
+            "a seated driver's chevron captures once, lowered to its own centre, and suppresses the second eye");
+        seated=false;displayedSerial=++testContext.tracking.serial;
+        const unsigned onFoot=captureBegins;
+        seatDraw(backgroundCall,element);
+        check(seatElementCalls==7&&captureBegins==onFoot&&!HaloCEHud_CapturedCrosshair(),
+            "an on-foot player's centre background is never taken for a seat reticle");
+        CrosshairHook(0,17,29,nullptr);
+        check(captureBegins==onFoot+1&&liftAtBegin==0.0f,"the weapon crosshair's capture stays centred");
     }
     ++testGeneration;
     check(!HaloCEHud_CapturedCrosshair(),"module generation change rejects previous crosshair ownership");

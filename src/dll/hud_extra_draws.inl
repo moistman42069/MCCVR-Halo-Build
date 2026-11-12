@@ -12,33 +12,43 @@ static HudDrawIndirectFn g_origHudDrawIndexedIndirect{},g_origHudDrawIndirect{};
 static void STDMETHODCALLTYPE HudDrawIndexedInstancedHook(ID3D11DeviceContext* context,
     UINT indices,UINT instances,UINT startIndex,INT baseVertex,UINT startInstance)
 {
-    if(ShouldHideExtraHudDraw(context))return;
+    HookCostScope cost(hook_cost::Site::DrawOther);
+    if(PostEffects_ShouldSkipDraw(context)||ShouldHideExtraHudDraw(context))return;
     BloomDrawScope bloom(context);
+    HookCostNative native(cost);
     g_origHudDrawIndexedInstanced(context,indices,instances,startIndex,baseVertex,startInstance);
 }
 static void STDMETHODCALLTYPE HudDrawInstancedHook(ID3D11DeviceContext* context,
     UINT vertices,UINT instances,UINT startVertex,UINT startInstance)
 {
-    if(ShouldHideExtraHudDraw(context))return;
+    HookCostScope cost(hook_cost::Site::DrawOther);
+    if(PostEffects_ShouldSkipDraw(context)||ShouldHideExtraHudDraw(context))return;
     BloomDrawScope bloom(context);
+    HookCostNative native(cost);
     g_origHudDrawInstanced(context,vertices,instances,startVertex,startInstance);
 }
 static void STDMETHODCALLTYPE HudDrawAutoHook(ID3D11DeviceContext* context)
 {
-    if(ShouldHideExtraHudDraw(context))return;
+    HookCostScope cost(hook_cost::Site::DrawOther);
+    if(PostEffects_ShouldSkipDraw(context)||ShouldHideExtraHudDraw(context))return;
     BloomDrawScope bloom(context);
+    HookCostNative native(cost);
     g_origHudDrawAuto(context);
 }
 static void STDMETHODCALLTYPE HudDrawIndexedIndirectHook(ID3D11DeviceContext* context,ID3D11Buffer* arguments,UINT offset)
 {
-    if(ShouldHideExtraHudDraw(context))return;
+    HookCostScope cost(hook_cost::Site::DrawOther);
+    if(PostEffects_ShouldSkipDraw(context)||ShouldHideExtraHudDraw(context))return;
     BloomDrawScope bloom(context);
+    HookCostNative native(cost);
     g_origHudDrawIndexedIndirect(context,arguments,offset);
 }
 static void STDMETHODCALLTYPE HudDrawIndirectHook(ID3D11DeviceContext* context,ID3D11Buffer* arguments,UINT offset)
 {
-    if(ShouldHideExtraHudDraw(context))return;
+    HookCostScope cost(hook_cost::Site::DrawOther);
+    if(PostEffects_ShouldSkipDraw(context)||ShouldHideExtraHudDraw(context))return;
     BloomDrawScope bloom(context);
+    HookCostNative native(cost);
     g_origHudDrawIndirect(context,arguments,offset);
 }
 

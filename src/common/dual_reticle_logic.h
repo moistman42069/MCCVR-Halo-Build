@@ -8,10 +8,12 @@ namespace dual_reticle {
 inline bool Supported(GameTitle title) noexcept {
     return title==GameTitle::Halo2 || title==GameTitle::Halo3;
 }
+// secondaryOwnLine: the second gun's shots leave on a line of their own (Game_SecondaryShotsOwnLine). Without it
+// both guns fire along the game's one aim, and a second mark would show a line no shot takes.
 inline bool Eligible(GameTitle title,bool secondaryPresented,bool primaryTracked,
-    bool secondaryTracked,bool crosshair,bool hideHud,bool theatre) noexcept {
+    bool secondaryTracked,bool crosshair,bool hideHud,bool theatre,bool secondaryOwnLine) noexcept {
     return Supported(title)&&secondaryPresented&&primaryTracked&&secondaryTracked&&
-        crosshair&&!hideHud&&!theatre;
+        crosshair&&!hideHud&&!theatre&&secondaryOwnLine;
 }
 inline int PhysicalHand(unsigned weaponSlot,bool leftHanded) noexcept {
     return PhysicalHandForWeaponSlot(static_cast<int>(weaponSlot),leftHanded);

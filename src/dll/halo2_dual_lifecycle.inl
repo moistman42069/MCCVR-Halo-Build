@@ -1,6 +1,17 @@
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// The dev AS SEEN witness (halo2_impact_witness.inl) rides this lane's fire scope and owner proof: in after it,
+// out before it.
+bool InstallHalo2ImpactWitness(uintptr_t base,size_t size);
+bool RemoveHalo2ImpactWitness();
+#endif
+
 bool RemoveHalo2DualAim()
 {
     auto& feature=g_halo2Dual;
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if(!RemoveHalo2ImpactWitness())
+    {LOG("Halo 2 dual aim CleanupRequired: the AS SEEN witness is still busy");return false;}
+#endif
     feature.enabled.store(false,std::memory_order_release);
     void** targets[]{&feature.fireTarget,&feature.aimTarget,&feature.locationTarget,&feature.cameraTarget};
     bool any=false;
@@ -95,6 +106,9 @@ bool InstallHalo2DualAim(uintptr_t base,size_t size)
     // Muzzle marker admission is its own optional transaction. Its failure
     // cannot remove working per-hand acquisition or any VR camera path.
     (void)InstallHalo2Muzzle(base,size);
-    LOG("Halo 2 dual aim Installed: optional per-hand native acquisition and firing assist; option=%d",g_config.independent_dual_aim?1:0);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    (void)InstallHalo2ImpactWitness(base,size);
+#endif
+    LOG("Halo 2 dual aim Installed: optional per-hand native acquisition and firing assist; option=%d",Sight_IndependentDualAim()?1:0);
     return true;
 }

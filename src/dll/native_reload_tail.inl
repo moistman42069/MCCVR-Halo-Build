@@ -48,8 +48,10 @@ bool TryKeepReloadTail(const TailCapture& capture,unsigned& stage)
     if(!weapon) return false;
     auto* users=r.tailUsers(i);
     if(!users) return false;
-    auto* user=users+capture.user*l.userStride;
-    auto* slot=user+capture.slot*l.slotStride;
+    uint32_t userStride=l.userStride,slotStride=l.slotStride;
+    if(i==native_reload::H3) Game_Halo3FpStrides(userStride,slotStride); // node capacity per build (game.cpp)
+    auto* user=users+capture.user*userStride;
+    auto* slot=user+capture.slot*slotStride;
     if(TailRead<uint32_t>(user,4)==UINT32_MAX || TailRead<uint32_t>(slot,l.weapon)!=capture.weapon) return false;
     stage=4;
     auto* channel=slot+l.channel;

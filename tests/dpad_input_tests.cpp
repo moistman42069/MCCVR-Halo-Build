@@ -1,4 +1,5 @@
 #include "../src/common/input_logic.h"
+#include "../src/common/aim_no_unit_logic.h"
 #include "../src/common/exclusive_input.h"
 #include "../src/common/flashlight_input.h"
 #include <windows.h>
@@ -82,6 +83,111 @@ int main()
         Check(DpadHeadWithinRadius(head, controller, test.radius) == test.inside,
             "radius preserves strict boundary, limits and invalid-setting fallback");
     }
+    {
+        StickDirections stick;
+        stick.Step(0.0f, -0.5f, true);
+        Check(!stick.down && !stick.up, "a part push does nothing");
+        stick.Step(0.1f, -0.9f, true);
+        Check(stick.down && !stick.up, "down is down");
+        stick.Step(0.0f, -0.5f, true);
+        Check(stick.down, "it stays down while the stick is still pushed");
+        stick.Step(0.0f, 0.1f, true);
+        Check(!stick.down, "and lets go when it comes back");
+        stick.Step(0.9f, -0.75f, true);
+        Check(!stick.down, "a mostly sideways push is a turn");
+        stick.Step(0.0f, 0.0f, true);
+        stick.Step(0.0f, 0.9f, true);
+        Check(stick.up && !stick.down, "up is up");
+        stick.Step(0.0f, -0.9f, true);
+        Check(stick.up && !stick.down, "swinging straight through without coming back is still the first push");
+        stick.Step(0.0f, 0.0f, true);
+        stick.Step(0.0f, -0.9f, false);
+        Check(!stick.down, "not free (off foot, a lens, the thumb-rest D-pad): nothing");
+        stick.Step(0.0f, -0.9f, true);
+        Check(!stick.down, "a stick still held down when it is free again does not count");
+        stick.Step(0.0f, 0.0f, true);
+        stick.Step(0.0f, -0.9f, true);
+        Check(stick.down, "until it comes back");
+        stick.Step(NAN, NAN, true);
+        Check(!stick.down && !stick.up, "a broken reading is a stick at rest");
+    }
+    {
+        using Key = HeadKeyGesture::Key;
+        HeadKeyGesture talk;
+        uint64_t talkNow = 0;
+        const auto step = [&](bool atHead, bool down, bool allowed) { return talk.Step(atHead, down, allowed, talkNow += 1000); };
+        Check(step(false, true, true) == Key::None && !talk.talking, "X away from the head is the game's X");
+        Check(step(true, true, true) == Key::None && !talk.talking, "a hand raised with X already held does not talk");
+        Check(step(true, false, true) == Key::None, "and letting go does nothing");
+        Check(step(true, true, true) == Key::Press && talk.talking, "a fresh X at the head presses the key");
+        Check(step(true, true, true) == Key::None && talk.talking, "held, once");
+        Check(step(false, true, true) == Key::None && talk.talking, "lowering the hand keeps it held");
+        Check(step(false, false, true) == Key::Release && !talk.talking, "X's release lets it go");
+        Check(step(true, false, true) == Key::None, "nothing is down");
+        Check(step(true, true, true) == Key::Press, "pressed again");
+        Check(step(true, true, false) == Key::Release && !talk.talking, "focus lost or the menu opened lets it go");
+        Check(step(true, true, true) == Key::None && !talk.talking, "X still held does not press again");
+        Check(step(true, false, true) == Key::None, "until it is let go");
+        Check(step(true, true, false) == Key::None && !talk.talking, "not allowed: no press");
+        HeadKeyGesture quick;
+        Check(quick.Step(true, true, true, 5000) == Key::Press, "a quick press");
+        Check(quick.Step(true, false, true, 5040) == Key::None && quick.talking, "stays down after the button is let go");
+        Check(quick.Step(true, false, true, 5000 + HeadKeyGesture::kMinHoldMs) == Key::Release, "for the shortest hold the host sees");
+        Check(quick.Step(true, true, true, 6000) == Key::Press, "pressed again");
+        Check(quick.Step(true, false, false, 6040) == Key::Release, "not allowed lets go without waiting");
+    }
+    {
+        using Y = HeadYChord::Y;
+        HeadYChord y;
+        Check(y.Step(true, false, false, true, 1000) == Y::Game, "Y away from the head is the game's at once");
+        Check(y.Step(true, true, false, true, 2000) == Y::Game, "and stays so if the hand comes up during that press");
+        y.Step(false, true, false, true, 2100);
+        Check(y.Step(true, true, false, true, 3000) == Y::Waiting, "Y at the head waits for B");
+        Check(y.Step(true, true, false, true, 3000 + HeadYChord::kHoldOffMs) == Y::Key, "alone, it counts");
+        Check(y.Step(true, true, true, true, 3200) == Y::Game, "B with the scoreboard up gives the press to the chord");
+        Check(y.Step(true, true, false, true, 3300) == Y::Game, "for the rest of the press");
+        y.Step(false, true, false, true, 3400);
+        Check(y.Step(true, true, false, true, 4000) == Y::Waiting, "a new press waits again");
+        Check(y.Step(true, true, true, true, 4050) == Y::Game, "B during the wait: nothing is sent");
+        y.Step(false, true, false, true, 4100);
+        Check(y.Step(true, true, true, true, 5000) == Y::Game, "B first: the chord");
+        y.Step(false, true, false, true, 5100);
+        Check(y.Step(true, true, true, false, 6000) == Y::Key, "the chord turned off: no wait, and B changes nothing");
+        y.Step(false, true, false, false, 6100);
+        Check(y.Step(true, true, false, true, 7000) == Y::Waiting, "a tap waits like any press");
+        Check(y.Step(false, true, false, true, 7050) == Y::Key, "let go during the wait, it counts once");
+        Check(y.Step(false, true, false, true, 7060) == Y::Game, "and only once");
+        y.Step(true, true, false, true, 8000);
+        y.Step(true, true, false, true, 8000 + HeadYChord::kHoldOffMs);
+        Check(y.Step(false, true, false, true, 8200) == Y::Game, "a press that already counted has nothing more on release");
+        y.Step(true, true, false, true, 9000);
+        y.Step(true, true, true, true, 9050);
+        Check(y.Step(false, true, true, true, 9100) == Y::Game, "letting go of a chord sends nothing");
+        y.Step(true, false, false, true, 10000);
+        Check(y.Step(false, false, false, true, 10050) == Y::Game, "a tap away from the head is the game's");
+    }
+    {
+        // A screen holds the controller only while the character is really gone, and lets go at once.
+        using aim_no_unit::Presence;
+        aim_no_unit::NoCharacterNow none;
+        Check(!none.Step(Presence::Absent, 1000, 1000), "a blip of no character takes nothing");
+        Check(none.Step(Presence::Absent, 1000 + aim_no_unit::kEnterMs, 1000 + aim_no_unit::kEnterMs), "a held absence does");
+        Check(!none.Step(Presence::Present, 1300, 1300), "a respawn lets go on its first sample");
+        Check(!none.Step(Presence::Absent, 1350, 1350), "and an absence starts its wait again");
+        Check(!none.Step(Presence::Absent, 1350, 1350 + aim_no_unit::kStaleMs + 1), "a sampler gone quiet holds nothing");
+    }
+    {
+        DpadMovementLatch latch;
+        Check(!latch.Step(false, true), "hand down: never the D-pad");
+        Check(!latch.Step(true, true), "hand comes up while walking: the stick keeps walking");
+        Check(!latch.Step(true, true), "and goes on walking while it stays pushed");
+        Check(latch.Step(true, false), "the stick returns to centre: now the D-pad");
+        Check(latch.Step(true, true), "pushed again from centre at the head: a D-pad press");
+        Check(!latch.Step(false, true), "hand down: walking again");
+        DpadMovementLatch still;
+        Check(still.Step(true, false), "hand comes up standing still: the D-pad at once");
+        Check(still.Step(true, true), "and the stick presses it");
+    }
     Check(DpadHeadWithinRadius(head, diagonalInside, 0.30f) &&
         !DpadHeadWithinRadius(head, diagonalOutside, 0.30f), "head radius measures all three axes");
     Check(!DpadHeadWithinRadius(nullptr, head, 0.30f) &&
@@ -154,9 +260,10 @@ int main()
         p.b=p.x=p.y=p.clickL=p.clickR=true;
         p.thumbrestDpad=!pointer;p.dpadY=.9f;
         holds.ApplyVr(p,true,pointer);
-        Check(p.valid&&!p.moveY&&!p.turnX&&!p.trigR&&!p.gripL&&p.a==pointer&&
-            !p.b&&!p.x&&!p.y&&!p.clickL&&!p.clickR&&!p.menu&&!p.weaponButtons,
-            "pointer preserves A only; D-pad suppresses all other gameplay without disconnecting controllers");
+        Check(p.valid&&!p.moveY&&!p.turnX&&!p.trigR&&(p.gripL>0)==pointer&&p.a==pointer&&
+            p.b==pointer&&p.x==pointer&&p.y==pointer&&!p.clickL&&!p.clickR&&!p.menu&&!p.weaponButtons,
+            "pointer preserves A, B, X, Y and the grips only; D-pad suppresses all other gameplay without disconnecting "
+            "controllers");
         Check(p.dpadY==.9f,"D-pad direction survives exclusive filtering");
         p.moveY=1;p.turnX=.8f;p.trigR=1;p.gripL=1;p.a=p.menu=true;
         holds.ApplyVr(p,false);
@@ -167,8 +274,10 @@ int main()
         Check(p.moveY==1&&p.trigR==1&&p.a,"release then fresh input resumes normally");
         XINPUT_GAMEPAD raw{};raw.wButtons=0xffff;raw.sThumbLX=31000;raw.sThumbRY=-29000;
         raw.bLeftTrigger=raw.bRightTrigger=255;physical.ApplyPhysical(raw,true,pointer);
-        Check(raw.wButtons==(pointer?XINPUT_GAMEPAD_A:0)&&!raw.sThumbLX&&!raw.sThumbRY&&!raw.bLeftTrigger&&!raw.bRightTrigger,
-            "physical pointer confirmation passes A only; D-pad still suppresses it");
+        constexpr WORD face=XINPUT_GAMEPAD_A|XINPUT_GAMEPAD_B|XINPUT_GAMEPAD_X|XINPUT_GAMEPAD_Y|
+            XINPUT_GAMEPAD_LEFT_SHOULDER|XINPUT_GAMEPAD_RIGHT_SHOULDER;
+        Check(raw.wButtons==(pointer?face:0)&&!raw.sThumbLX&&!raw.sThumbRY&&!raw.bLeftTrigger&&!raw.bRightTrigger,
+            "physical pointer passes A, B, X, Y and the bumpers only; D-pad still suppresses them");
         raw.wButtons=0xffff;raw.sThumbLX=31000;raw.bRightTrigger=255;physical.ApplyPhysical(raw,false);
         Check(!raw.wButtons&&!raw.sThumbLX&&!raw.bRightTrigger,"physical holds drain independently");
     }

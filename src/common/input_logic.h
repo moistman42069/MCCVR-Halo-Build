@@ -1,4 +1,5 @@
 #pragma once
+#include <cmath>
 
 #include <cstdint>
 #include "runtime_types.h"
@@ -57,6 +58,134 @@ float BlendXInputMotors(uint16_t lowFrequencyMotor, uint16_t highFrequencyMotor)
 
 // Distance is from the tracked head centre, preserving the original 30 cm
 // gesture by default. Title-specific side-of-head requirements stay at caller.
+// A Project Reclaimer key from the controller: a button with the left controller at the head presses the key, and the
+// button's release lets it go, so the host's own handling (its Hold or Toggle talk mode, say) decides what that means.
+// Only a fresh press at the head starts it, the button then belongs to the key until it is let go, and a press that
+// stops being allowed lets the key go.
+struct HeadKeyGesture
+{
+    enum class Key { None, Press, Release };
+    // The host misses a key held much under this, so a quick press stays down this long. Stopping being allowed still
+    // lets go at once.
+    static constexpr uint64_t kMinHoldMs = 150;
+    bool talking = false;
+    bool xWasDown = false;
+    uint64_t pressedAtMs = 0;
+    uint32_t logged = 0;
+    Key Step(bool atHead, bool xDown, bool allowed, uint64_t nowMs) noexcept
+    {
+        const bool rising = xDown && !xWasDown;
+        xWasDown = xDown;
+        if (talking)
+        {
+            if (allowed && (xDown || nowMs - pressedAtMs < kMinHoldMs))
+                return Key::None;
+            talking = false;
+            return Key::Release;
+        }
+        if (rising && atHead && allowed)
+        {
+            talking = true;
+            pressedAtMs = nowMs;
+            return Key::Press;
+        }
+        return Key::None;
+    }
+};
+
+// Y at the head gives way to the Y + B pause. Y waits kHoldOffMs for B before it counts: a Tab tap can leave the host's
+// scoreboard up, so not even a moment of it may go out ahead of a chord. Y away from the head is the game's at once. B at
+// any point in the press gives the whole press to the chord, until Y is let go. A tap let go during the wait counts on
+// its release, so the wait never swallows a quick press.
+struct HeadYChord
+{
+    static constexpr uint64_t kHoldOffMs = 120;
+    enum class Y { Game, Waiting, Key };
+    uint64_t downSinceMs = 0;
+    bool atHead = false;
+    bool chord = false;
+    bool counted = false;
+    Y Step(bool yDown, bool atHeadNow, bool bDown, bool chordEnabled, uint64_t nowMs) noexcept
+    {
+        if (!yDown)
+        {
+            const bool tap = downSinceMs && atHead && !chord && !counted;
+            downSinceMs = 0;
+            atHead = chord = counted = false;
+            return tap ? Y::Key : Y::Game;
+        }
+        if (!downSinceMs)
+        {
+            downSinceMs = nowMs ? nowMs : 1;
+            atHead = atHeadNow;
+        }
+        if (!atHead)
+            return Y::Game;
+        if (chordEnabled && bDown)
+            chord = true;
+        if (chord)
+            return Y::Game;
+        if (chordEnabled && nowMs - downSinceMs < kHoldOffMs)
+            return Y::Waiting;
+        counted = true;
+        return Y::Key;
+    }
+};
+
+// The right stick's up and down as controls for VR Mappings' rows (Right stick up, Right stick down; every game starts
+// with down toggling a crouch and up held for sprint). A push must be mostly vertical, so turning with a stick that drifts
+// presses neither, and it stays down until the stick comes back near centre, which it must before it counts again.
+// `free` false (off foot, or the stick wanted for something else) presses neither until the stick has come back.
+struct StickDirections
+{
+    static constexpr float kPush = 0.7f, kRearm = 0.4f, kVerticalOverHorizontal = 1.5f;
+    bool up = false;
+    bool down = false;
+    bool armed = true;
+    void Step(float x, float y, bool free) noexcept
+    {
+        if (!std::isfinite(x) || !std::isfinite(y)) x = y = 0.0f;
+        if (!free)
+        {
+            up = down = false;
+            armed = false;
+        }
+        else if (armed && std::fabs(y) >= kPush && std::fabs(y) > std::fabs(x) * kVerticalOverHorizontal)
+        {
+            up = y > 0.0f;
+            down = y < 0.0f;
+            armed = false;
+        }
+        if (std::fabs(y) < kRearm)
+        {
+            armed = true;
+            up = down = false;
+        }
+    }
+};
+
+// The head D-pad gesture when a hand comes up while walking: the stick goes on walking until it returns to centre, and
+// only then does it become the D-pad. `moving` false always gives the plain gesture.
+struct DpadMovementLatch
+{
+    bool walking = false;
+    bool wasAtHead = false;
+    bool Step(bool atHead, bool moving) noexcept
+    {
+        if (!atHead)
+        {
+            walking = wasAtHead = false;
+            return false;
+        }
+        if (!moving)
+            walking = false;
+        else if (!wasAtHead)
+            walking = true;
+        wasAtHead = true;
+        return !walking;
+    }
+};
+
 bool DpadHeadWithinRadius(const float head[3], const float controller[3],
     float radiusMetres) noexcept;
 

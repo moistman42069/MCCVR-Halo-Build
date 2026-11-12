@@ -7,12 +7,16 @@
 #include <windows.h>
 
 #include "../common/coop_probe_logic.h"
+#include "../common/host_unload_gate_logic.h"
+#include "../common/title_build_identity.h"
 #include "../common/log.h"
 #include "d3d11_hook.h"
 #include "halo2_adapter.h"
 #include "halo4_adapter.h"
+#include "lifted_engine.h"
 #include "reach_adapter.h"
 #include "title_reentry_probe.h"
+#include "seat_exit_witness.h"
 
 namespace
 {
@@ -23,6 +27,12 @@ namespace
     std::atomic<GameTitle> g_activeTitle{ GameTitle::None };
     std::atomic<uint64_t> g_activeTitleEpochMs{ 0 };
     std::atomic<RuntimeMode> g_runtimeMode{ RuntimeMode::Shell };
+
+    // UNLOADS THE POLL DID NOT SEE (TitleAdapter_NoteImageUnloading). The bases the last poll found, and how
+    // often the loader has unmapped each since the process began.
+    std::array<std::atomic<uintptr_t>, kTitleRuntimeSlotCount> g_polledBases{};
+    std::array<std::atomic<uint32_t>, kTitleRuntimeSlotCount> g_imageUnloads{};
+    std::array<uint32_t, kTitleRuntimeSlotCount> g_imageUnloadsPolled{};   // the polling thread's own
 
     struct CinematicControlSlot
     {
@@ -193,6 +203,11 @@ void TitleAdapter_SetRuntimeMode(RuntimeMode mode)
         return;
     LOG("Runtime mode: %s -> %s",
         RuntimeModeName(previous), RuntimeModeName(mode));
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    // SEATEXIT witness: a vehicle/turret -> gameplay edge gets its own block unless a raw seat edge explained it.
+    SeatWitness_NoteRuntimeMode(TitleAdapter_GetActiveTitle(), static_cast<uint8_t>(previous),
+        static_cast<uint8_t>(mode));
+#endif
     // Preserve the exact teardown edge for targeted co-op diagnostic rebuilds.
     // Production builds compile the sampler and dump out, so this call is a
     // no-op. Ordinary menu traffic is still excluded from the dormant path.
@@ -472,16 +487,87 @@ TitleAdapterRuntimeSnapshot TitleAdapter_GetRuntimeSnapshot(
     return result;
 }
 
+void TitleAdapter_NoteImageUnloading(uintptr_t base) noexcept
+{
+    if (!base)
+        return;
+    for (size_t slot = 0; slot < kTitleRuntimeSlotCount; ++slot)
+        if (g_polledBases[slot].load(std::memory_order_acquire) == base)
+            g_imageUnloads[slot].fetch_add(1, std::memory_order_acq_rel);
+}
+
+// A loaded image's PE timestamp and size. Guarded: the DLL can be unloaded under the read.
+static bool ReadTitleImageIdentity(HMODULE module, uint32_t& stamp, uint32_t& size) noexcept
+{
+    __try
+    {
+        const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(module);
+        if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 || dos->e_lfanew > 0x1000)
+            return false;
+        const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS64*>(
+            reinterpret_cast<const uint8_t*>(module) + dos->e_lfanew);
+        if (nt->Signature != IMAGE_NT_SIGNATURE)
+            return false;
+        stamp = nt->FileHeader.TimeDateStamp;
+        size = nt->OptionalHeader.SizeOfImage;
+        return true;
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return false;
+    }
+}
+
 const TitleDescriptor* TitleAdapter_PollLoaded(uint64_t observedAtMs)
 {
     size_t count = 0;
     const TitleDescriptor* titles = TitleRegistry_All(count);
     TitleRuntimeModuleSet modules{};
     const TitleDescriptor* detected = nullptr;
+    // BUILD CHECK (title_build_identity.h): once per title and per build seen this session, whether its DLL is
+    // the build this mod was made for. Worker thread; the header read is guarded (the DLL can unload under it).
+    static uint32_t reportedStamp[kTitleRuntimeSlotCount]{}, reportedSize[kTitleRuntimeSlotCount]{};
+    const auto reportBuild = [](const TitleDescriptor& title, HMODULE module, size_t slot) noexcept
+    {
+        uint32_t stamp = 0, size = 0;
+        if (!ReadTitleImageIdentity(module, stamp, size))
+            return;
+        if (!stamp || (reportedStamp[slot] == stamp && reportedSize[slot] == size))
+            return;
+        reportedStamp[slot] = stamp;
+        reportedSize[slot] = size;
+        const title_build::Identity* const known = title_build::Known(title.title);
+        switch (title_build::Compare(title.title, stamp, size))
+        {
+        case title_build::Match::Known:
+            LOG("BUILD CHECK %s: %ls is the build this mod was made for (PE timestamp 0x%08X, image size 0x%X; MCC "
+                "%s; the same on Steam and the Microsoft Store)",
+                title.displayName, title.moduleName, stamp, size, title_build::kKnownMccBuild);
+            break;
+        case title_build::Match::Different:
+            LOG("BUILD CHECK %s: %ls is NOT the build this mod was made for: PE timestamp 0x%08X, image size 0x%X "
+                "(made for 0x%08X, 0x%X; MCC %s). MCC has been updated, or this is a build nobody has looked at. %s "
+                "THE MOD NEEDS AN UPDATE FOR THIS BUILD; send this line with any report",
+                title.displayName, title.moduleName, stamp, size, known ? known->peTimestamp : 0,
+                known ? known->sizeOfImage : 0, title_build::kKnownMccBuild,
+                title_build::CoreIsBuildGated(title.title)
+                    ? "This game's VR core installs only on that build, so it will stay off here and the game "
+                      "plays flat (look for StockFallback, FAIL or WITHHELD lines)."
+                    : "This game's VR core looks its functions up by signature and may still install; features "
+                      "that do not find theirs say StockFallback.");
+            break;
+        default:
+            break;
+        }
+    };
     size_t detectedCount = 0;
     for (size_t i = 0; i < count; ++i)
     {
-        const HMODULE module = GetModuleHandleW(titles[i].moduleName);
+        HMODULE module = GetModuleHandleW(titles[i].moduleName);
+        // Project Reclaimer 0.10 runs no halo3.dll: halo3.dll's image inside the client stands in for it, its code
+        // run as translated functions (lifted_engine.h).
+        if (!module && titles[i].title == GameTitle::Halo3 && lifted::Poll())
+            module = lifted::Halo3Module();
         if (!module)
             continue;
         const size_t slot = TitleRuntimeSlotIndex(titles[i].title);
@@ -489,10 +575,36 @@ const TitleDescriptor* TitleAdapter_PollLoaded(uint64_t observedAtMs)
             continue;
         modules.availabilityMask |= uint32_t{1} << slot;
         modules.moduleBases[slot] = reinterpret_cast<uintptr_t>(module);
+        reportBuild(titles[i], module, slot);
         if (!detected)
             detected = &titles[i];
         ++detectedCount;
     }
+
+    // A title DLL that the loader unmapped since the last poll and that is here again at the same base was
+    // unloaded and loaded again in between: publish the set without it first, so it starts a new generation
+    // exactly as it does when a poll catches it gone. (An unload that lands between this poll's module
+    // lookups and the read below publishes the same gap; the next poll then sees what is really there.)
+    TitleRuntimeModuleSet gap = modules;
+    uint32_t reloadedMask = 0;
+    for (size_t slot = 0; slot < kTitleRuntimeSlotCount; ++slot)
+    {
+        const uint32_t unloads = g_imageUnloads[slot].load(std::memory_order_acquire);
+        const bool unloaded = unloads != g_imageUnloadsPolled[slot];
+        g_imageUnloadsPolled[slot] = unloads;
+        if (host_unload_gate::ReloadedUnseen(unloaded, modules.moduleBases[slot],
+                                             g_polledBases[slot].load(std::memory_order_relaxed)))
+        {
+            reloadedMask |= uint32_t{1} << slot;
+            gap.availabilityMask &= ~(uint32_t{1} << slot);
+            gap.moduleBases[slot] = 0;
+        }
+        g_polledBases[slot].store(modules.moduleBases[slot], std::memory_order_release);
+    }
+    if (reloadedMask && g_titleRuntime.PublishModuleSet(gap, observedAtMs))
+        LOG("Title adapter: game DLLs were unloaded and loaded again at the same base between two module polls "
+            "(slot mask 0x%X); published the unload the poll did not see, so each starts a new generation in "
+            "its new image", reloadedMask);
 
     const TitleRuntimeAvailabilitySnapshot previousAvailability =
         g_titleRuntime.LoadAvailability();

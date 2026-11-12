@@ -8,6 +8,7 @@
 #include "../src/common/config.h"
 #include "../src/common/runtime_types.h"
 #include "../src/common/halo3_vehicle_logic.h"
+#include "../src/common/vehicle_control_logic.h"
 #include "../src/common/vr_turn_mode.h"
 
 static unsigned checks{};
@@ -32,12 +33,14 @@ static bool Game_ReachPlayerIsInVehicle(){return reachSeated;}
 struct VrPadState{bool valid=true;float turnX=0;};
 static std::atomic<bool> g_vrAim{true};
 static float g_gameYawRef{};
-static bool authorsSteering=false,wheelActive=false,h4Active=true,h4Valid=true,h4Seated=true;
+static bool authorsSteering=false,stickAims=false,wheelActive=false,h4Active=true,h4Valid=true,h4Seated=true;
 static bool Halo3SeatAuthorsSteeringNow(){return authorsSteering;}
+static bool Halo3SeatStickAimsNow(){return stickAims;}
 static bool Game_Halo3VehicleWheelActive(){return wheelActive;}
 static bool Halo4ControllerAimActive(){return h4Active;}
 struct Halo4VehicleInputState{bool seated=false;};
-static bool Halo4ReadVehicleInput(Halo4VehicleInputState& out){out.seated=h4Seated;return h4Valid;}
+// The camera hook's seat stamp (production: Halo4ReadSeatStamp in game.cpp).
+static bool Halo4ReadSeatStamp(Halo4VehicleInputState& out){out.seated=h4Seated;return h4Valid;}
 struct H4Camera{std::atomic<float> gameYawReference{0};std::atomic<uint64_t> vrTurns{0};}g_halo4Camera;
 static float WrapPi(float value){return std::remainder(value,6.28318530718f);}
 static int64_t ticks=100000;
@@ -81,7 +84,10 @@ static void TurnTests(bool h4)
     Check(Near(Step(h4,1),-.02094395f),"saved smooth preference remains effective outside vehicles");
     Check(Step(h4,.1f)==0,"smooth deadzone retained");
     if(!h4){authorsSteering=true;wheelActive=false;Check(Step(false,1)==0,"native driver steering keeps the stick");
-        wheelActive=true;Check(Near(Step(false,1),-.02094395f),"active physical wheel releases VR turn stick");authorsSteering=wheelActive=false;}
+        wheelActive=true;Check(Near(Step(false,1),-.02094395f),"active physical wheel releases VR turn stick");authorsSteering=wheelActive=false;
+        stickAims=true;Check(Step(false,1)==0,"a seat the stick aims keeps the stick");
+        wheelActive=true;Check(Step(false,1)==0,"and a wheel that is not this seat's does not free it");stickAims=wheelActive=false;
+        Check(Near(Step(false,1),-.02094395f),"back in a hand-aimed seat the stick turns the view again");}
 }
 int main()
 {

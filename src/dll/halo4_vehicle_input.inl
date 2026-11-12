@@ -51,6 +51,11 @@ __declspec(noinline) bool Halo4ReadVehicleInputEx(Halo4VehicleInputState& output
             if (!feature.outputUnit)
             { Halo4VehicleInputSetFailure(reason,"output-unit"); __leave; }
             const auto unit=feature.outputUnit(0);
+            // No unit for the output user, read twice past every gate above (title, armed, generation, engine
+            // TLS, player-controlled): the free-camera frame's signal (aim_no_unit_logic.h). The read itself
+            // still fails as it always did.
+            if (unit==UINT32_MAX&&feature.outputUnit(0)==UINT32_MAX)
+            { AimNoUnit_Note(GameTitle::Halo4,false); Halo4VehicleInputSetFailure(reason,"no-unit"); __leave; }
             Halo4VehicleInputState next{},latest{};
             if (!Halo4ReadVehicleInputMemory(tls,unit,next)||
                 feature.outputUnit(0)!=unit||!Halo4ReadVehicleInputMemory(tls,unit,latest))
@@ -61,6 +66,7 @@ __declspec(noinline) bool Halo4ReadVehicleInputEx(Halo4VehicleInputState& output
                 feature.generation!=TitleAdapter_GetGeneration(GameTitle::Halo4))
             { Halo4VehicleInputSetFailure(reason,"unstable"); __leave; }
             output=next;valid=true;
+            AimNoUnit_Note(GameTitle::Halo4,true);
             if (next.seated) feature.seated.fetch_add(1,std::memory_order_relaxed);
         }
         __except(EXCEPTION_EXECUTE_HANDLER)

@@ -19,6 +19,10 @@ static TitleRuntimeLifecycle publishedLifecycle{};
 bool TitleAdapter_PublishLifecycle(GameTitle,uint32_t,const TitleRuntimeLifecycle& value)
 { publishedLifecycle=value; return true; }
 bool TitleAdapter_PublishHeartbeat(GameTitle,uint32_t,uint64_t) { return true; }
+// The unload gate (host_unload_gate.cpp is not linked here): the core's releases of its halo1.dll reference.
+static unsigned gateUnpins{};
+void HostUnloadGate_Pin(HMODULE,std::atomic<bool>*,const std::atomic<uint64_t>*,const char*,bool) {}
+void HostUnloadGate_Unpin(HMODULE) { ++gateUnpins; }
 float Game_GetWorldScale() { return 1.0f/3.048f; }
 bool Game_IsPositionalTracking() { return true; }
 static bool roomscaleAllowed=false;
@@ -26,9 +30,48 @@ static unsigned roomscaleCalls=0;
 static float roomscaleBody[3]{},roomscaleForward[3]{};
 bool Game_RoomscaleCameraAllowed(GameTitle) { return roomscaleAllowed; }
 uint64_t VR_PhysicalCrouchEpoch() noexcept { return 1; }
+float VR_RecenterStandingLiftM(GameTitle) noexcept { return 0.0f; }
+// The sight clock (sight_layer.cpp is not linked here): the gameplay context's camera stamp.
+uint64_t Sight_NowUs() { static uint64_t now=1000000; return now+=1000; }
 float HaloCEControls_PhysicalCrouchCorrection(uint32_t,uint64_t,float,bool) noexcept { return 0; }
+// No seat in this fixture: the tracking frame keeps the native camera heading.
+bool HaloCEControls_SeatHeading(uint32_t,halo_ce::Vec3&) noexcept { return false; }
+// Aim Frame Zoom (game.cpp) is not linked here: the game is never zoomed in this fixture, so no frame is drawn.
+bool HaloCEControls_ZoomLevel(uint32_t,int16_t&) noexcept { return false; }
+void Game_NoteZoomLevel(GameTitle,int16_t) {}
+bool Game_AimFrameForEyes(GameTitle,const float*,const float*,const float (*)[3],float,float,const float*,GameAimFramePass&)
+{ return false; }
+void Game_AimFrameOutcome(GameTitle,bool) {}
+void Game_SetAimFramePass(bool) {}
+bool Game_IsAimFramePass() { return false; }
+void Game_AimFrameHudScale(float& horizontal,float& vertical) { horizontal=vertical=1.0f; }
+// The vehicle cameras' chase-camera leash (game.cpp): none placed in this fixture unless a test places one, a box of
+// no size around the camera's point in the world's own frame.
+static bool leashPlaced{};
+static unsigned leashHeld{};
+bool Game_HaloCEVehicleCameraLeash(uint32_t,vehicle_camera_frame::Basis& carrier,vehicle_camera_frame::LeashBox& box) noexcept
+{
+    if (!leashPlaced) return false;
+    carrier=vehicle_camera_frame::FromAngles(0,0,0);
+    box=vehicle_camera_frame::LeashBox{};
+    return true;
+}
+void Game_HaloCEVehicleCameraLeashHeld() noexcept { ++leashHeld; }
+// The motion tracker's lane (haloce_head_relative.cpp) is not linked here: the gameplay publication hands it
+// the frame's head, recorded so the test can see that it does.
+static unsigned headPublications{};
+static bool headPublicationAnniversary{};
+static halo_ce::RenderContext headPublication{};
+void HaloCEHeadRelative_PublishHead(const halo_ce::RenderContext& context,bool anniversary) noexcept
+{ ++headPublications;headPublication=context;headPublicationAnniversary=anniversary; }
 bool HaloCEHud_HasCrosshairScope() noexcept { return naturalHudFrame; }
-void Roomscale_Camera(GameTitle title,bool allowed,const float* body,const float*,const float*,const float* forward,float* reference,float) noexcept {
+roomscale_admission::Verdict Game_RoomscaleCameraVerdict(GameTitle) {
+    roomscale_admission::Verdict verdict{};
+    verdict.refusal=roomscaleAllowed?roomscale_admission::Refusal::None:roomscale_admission::Refusal::Seated;
+    return verdict;
+}
+void Roomscale_Camera(GameTitle title,const roomscale_admission::Verdict& admission,const float* body,const float*,const float*,const float* forward,float* reference,float) noexcept {
+    const bool allowed=admission.Admitted();
     if(title==GameTitle::HaloCE&&allowed) {
         ++roomscaleCalls;std::memcpy(roomscaleBody,body,sizeof(roomscaleBody));
         std::memcpy(roomscaleForward,forward,sizeof(roomscaleForward));reference[0]+=.05f;
@@ -1755,8 +1798,10 @@ int main()
         gameplayCamera.Publish({}); RenderContext received{};
         check(!HaloCE_GetGameplayContext(received),"Anniversary controls require an actual stock-camera publication");
         gameplayBridgeVerified=false;
+        const unsigned headPublicationsBefore=headPublications;
         PublishAnniversaryGameplayContext(saber,tracking,frozen,revision,Game_GetWorldScale(),true);
         check(!HaloCE_GetGameplayContext(received),"unverified native bridge stays stock for controls only");
+        check(headPublications==headPublicationsBefore,"no gameplay publication, no head for the motion tracker");
         gameplayBridgeVerified=true;
         {
             // Exercise the actual reference preparation used before Anniversary
@@ -1785,6 +1830,26 @@ int main()
             PrepareAnniversaryTrackingReference(scope,pitchedSaber);
             check(roomscaleCalls==1&&scope.views.reference.position.x==accepted.position.x,
                 "menu and pause presentation cannot authorize CE movement");
+            // A CHASE CAMERA'S LEASH, in the Anniversary preparation: a box of no size about the camera's point holds
+            // the head there, so the frame's reference is moved onto the head; the reference kept for later frames is
+            // left as the same preparation leaves it without a leash.
+            roomscaleAllowed=false;
+            scope.referenceRevision=revision;scope.views.tracking.controllers.controlsPresentationBlocked=false;
+            scope.views.tracking.headPosition=frozen.position+halo_ce::Vec3{.3f,.1f,-.2f};
+            const auto keptReference=reference;
+            scope.views.reference=frozen;
+            PrepareAnniversaryTrackingReference(scope,pitchedSaber);
+            const auto unleashed=reference;
+            reference=keptReference;
+            scope.views.reference=frozen;
+            const unsigned heldBefore=leashHeld;
+            leashPlaced=true;
+            PrepareAnniversaryTrackingReference(scope,pitchedSaber);
+            leashPlaced=false;
+            const halo_ce::Vec3 apart=scope.views.reference.position-scope.views.tracking.headPosition;
+            check(leashHeld==heldBefore+1&&halo_ce::Dot(apart,apart)<1.0e-8f&&
+                std::memcmp(&reference,&unleashed,sizeof(reference))==0,
+                "an Anniversary frame's leash holds the head at the camera's point and leaves the kept reference alone");
             roomscaleAllowed=false;reference=originalReference;
         }
         PublishAnniversaryGameplayContext(saber,tracking,frozen,revision,Game_GetWorldScale(),true);
@@ -1792,6 +1857,11 @@ int main()
             std::fabs(received.camera.position.y-20)<.0001f&&std::fabs(received.camera.position.z-30)<.0001f&&
             received.tracking.serial==140&&received.referenceRevision==revision,
             "Anniversary stock-camera receipt reaches nonrender controls without tracked-eye offsets");
+        check(headPublications==headPublicationsBefore+1&&headPublicationAnniversary&&
+            std::fabs(headPublication.camera.position.x-10)<.0001f&&headPublication.tracking.serial==140&&
+            headPublication.referenceRevision==revision&&headPublication.cameraStampUs!=0&&
+            headPublication.cameraStampUs==received.cameraStampUs,
+            "the same publication hands the motion tracker's lane this frame's stock centre, tracking sample and sight stamp, marked Anniversary");
         tracking.serial=141; tracking.headPosition.x=.7f; HaloCE_PublishTracking(tracking,true);
         check(HaloCE_GetGameplayContext(received)&&received.tracking.serial==141&&
             received.tracking.headPosition.x==.7f&&std::fabs(received.camera.position.x-10)<.0001f,
@@ -1895,6 +1965,22 @@ int main()
     ResetListHook(rendererAddress+0xb0);
     check(!HasSyntheticLists(),"native reset retires synthetic source and active lists");
     check(Remove(),"drained adapter resources retire without touching another title");
+    // THE GAME'S END (the unload gate asked): no native reset comes, so a queued synthetic list no longer holds the
+    // retirement back, and the DLL reference goes last, the gate told after it.
+    check(HaloCE_TeardownRequested()==&teardownRequested&&HaloCE_LastFrameMs()==&lastCameraMs,
+        "the unload gate reads the core's own teardown flag and its camera's last frame");
+    HMODULE self{};
+    check(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,reinterpret_cast<LPCWSTR>(&HaloCE_Installed),&self),
+        "fixture module reference");
+    moduleReference=self;installed=true;
+    Prepared queued{};queued.synthetic=true;queued.valid=true;preparedLists[0].Publish(queued);
+    const unsigned unpinsBefore=gateUnpins;
+    check(HasSyntheticLists()&&!Remove()&&installed.load()&&moduleReference==self&&gateUnpins==unpinsBefore,
+        "before the game's end a queued synthetic list still holds the retirement and the DLL");
+    teardownRequested=true;
+    check(Remove()&&!HaloCE_Installed()&&!moduleReference&&gateUnpins==unpinsBefore+1,
+        "at the game's end the retirement goes past the queued list, lets go of the DLL last and tells the gate");
+    teardownRequested=false;
     check(!resources.Read(reinterpret_cast<uintptr_t>(testSource),reinterpret_cast<uintptr_t>(testSource),recorded),
         "module retirement invalidates previous pointer identities");
     return failures?1:0;

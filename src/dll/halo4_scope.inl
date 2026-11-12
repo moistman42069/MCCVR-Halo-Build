@@ -1,8 +1,10 @@
 // H4 observer conversion and native per-window setup own this optical pass.
 // Magnification comes from measured H4 projection gain, never an H3 field.
+// `root` is the camera before the headset pose (Chief's eye, looking along his aim); `center` the rendered
+// centre eye the two eye cameras are built around.
 void Halo4RenderScopeBody(uintptr_t element,uintptr_t view,uint32_t window,
     const Halo4SetupArgs& args,const unsigned char* savedObserver,
-    const Halo4CameraBasis& root,const Halo4FovCalibration& calibration)
+    const Halo4CameraBasis& root,const Halo4CameraBasis& center,const Halo4FovCalibration& calibration)
 {
     if(!VR_ScopeShouldRenderThisFrame())return;
     VR_InvalidateScopeImage();
@@ -15,8 +17,20 @@ void Halo4RenderScopeBody(uintptr_t element,uintptr_t view,uint32_t window,
     memcpy(input.controllerOrientation,g_halo4RigTracking.rightAimOrientation,sizeof(input.controllerOrientation));
     memcpy(input.controllerPosition,g_halo4RigTracking.rightAimPosition,sizeof(input.controllerPosition));
     if(!Halo4BuildControllerWorldPose(input,controller))return;
+    // SCOPE CONVERGENCE (F1 > Scope): from the rendered eye along the intent ray while the converged aim is
+    // written -- the centre of the lens is then the reticle's point, as in every other title. Otherwise the
+    // earlier lens: Chief's eye along his aim, which is the shot's own line but seen from where the character
+    // stands.
+    const float* scopeOrigin=root.position;
+    float scopeForward[3]{root.forward[0],root.forward[1],root.forward[2]};
+    float convergedForward[3]{};
+    if(Sight_ScopeConvergedDirection(GameTitle::Halo4,convergedForward))
+    {
+        memcpy(scopeForward,convergedForward,sizeof(scopeForward));
+        scopeOrigin=center.position;
+    }
     ScopeCameraPose pose{};float aspect=1;
-    if(!ComputeScopeCameraPose(controller.basis,root.position,root.forward,pose)||
+    if(!ComputeScopeCameraPose(controller.basis,scopeOrigin,scopeForward,pose)||
         !VR_GetScopeRenderAspect(aspect))return;
     const auto lens=ComputeScopeProjectionTangents(VR_GetScopeZoom(),aspect);
     const float fov=atanf(lens.vertical)/calibration.gain;
@@ -50,9 +64,9 @@ void Halo4RenderScopeBody(uintptr_t element,uintptr_t view,uint32_t window,
 }
 void Halo4RenderScope(uintptr_t element,uintptr_t view,uint32_t window,
     const Halo4SetupArgs& args,const unsigned char* savedObserver,
-    const Halo4CameraBasis& root,const Halo4FovCalibration& calibration)
+    const Halo4CameraBasis& root,const Halo4CameraBasis& center,const Halo4FovCalibration& calibration)
 {
-    __try {Halo4RenderScopeBody(element,view,window,args,savedObserver,root,calibration);}
+    __try {Halo4RenderScopeBody(element,view,window,args,savedObserver,root,center,calibration);}
     __except(EXCEPTION_EXECUTE_HANDLER)
     {VR_InvalidateScopeImage();g_halo4ScopeFaultGeneration.store(g_halo4Camera.generation.load());g_halo4ScopeFaults.fetch_add(1);}
 }

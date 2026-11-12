@@ -5,6 +5,40 @@ activation code remains in `launcher.cpp`. A new menu selects an installation
 and calls that same launch path only when the user selects **Launch MCC**.
 Installation and update discovery do not start MCC.
 
+**VR SETTINGS.** Opens `HaloMCCVRSettings.exe` from the selected install's `Halo_MCC_VR` folder: the VR menu's own code on
+the desktop (`src/settings`), editing that folder's `halomccvr.cfg`. It does not save while the game is open.
+
+**Troubleshooting.** The link at the right of the "03 / YOUR VR SETUP" heading opens `TROUBLESHOOTING.md` from the
+repository the launcher was built from (`HALOMCCVR_RELEASE_CHANNEL`), on that repository's default branch. Only when
+the link is pressed, the launcher asks GitHub whether that page exists, with short time limits. When it does not, or
+GitHub does not answer, the link opens Nitsujack's page on `nitsujack-development`, a branch that only moves
+forward. A launcher built from Nitsujack's repository opens that page directly. Each page can change without a new
+launcher, and the link works during a download or install too.
+
+**Unattended launch (`--headless`, dev builds only).** A launcher built with
+`HALOMCCVR_DEV_DIAGNOSTICS` (the `dev` preset) accepts
+`HaloMCCVRLauncher.exe --headless`: it skips the menu and launches the mod in
+the launcher's OWN folder (the menu's Launch always targets
+`<game>\Halo_MCC_VR`, so a side-by-side test install is launched this way). It
+never shows a dialog: every message, including what a dialog would have said,
+goes to `HaloMCCVRLauncher.log`, and the exit code reports the result: 0 = the
+game is running after 12 s, 2 = Steam edition and no `steam.exe` process, 1 =
+any other failure. It never offers VR recovery for a running game, and on the
+Store edition it does not wait for a manual start if activation fails. The test
+harness (`tools/Enter-Reach-FA.ps1`) uses it so an unattended run cannot leave a
+modal box on someone's desktop. The harness starts it with
+`__COMPAT_LAYER=RunAsInvoker`, so no UAC prompt can appear whatever the
+launcher's manifest asks for;
+the launcher removes that variable before it starts the game. A player build
+never parses the switch, and `tools/verify-qol-package.py` refuses a packaged
+launcher that contains it.
+
+The exit code 2 for a missing Steam applies in every build. So does logging:
+every message box shown while a launch runs writes its full text to the log
+(`ERROR shown to user: ...`, `NOTICE shown to user: ...`). Boxes shown before
+a launch starts (the update helper, a failure of the menu itself) are not
+logged, because the log belongs to the mod folder being launched.
+
 Package layout:
 
 ```
@@ -31,8 +65,8 @@ manifest is UTF-8/ASCII, one
 relative to `ModFiles`; backslashes and forward slashes are supported. Do not
 list directories, duplicate names, absolute paths or the manifest itself.
 `BUILD-IDENTITY.txt` contains `source_commit=<40 hex>`,
-`build_kind=UNTESTED_LOCAL_CANDIDATE` (or `PUBLIC_RELEASE`) and
-`release_tag=<exact published GitHub tag, otherwise empty>`, one per line.
+`build_kind=RELEASE_CANDIDATE` (or `PUBLIC_RELEASE`) and
+`release_tag=<exact published GitHub tag, or RC-<short commit> for a release candidate>`, one per line.
 The menu displays the installed identity, describes discovery as the latest
 public release, and labels replacement of a candidate as Install public release.
 
@@ -42,9 +76,12 @@ fixed-drive XboxGames/XBOX fallback and Browse cover additional libraries.
 Each result must contain one of MCC's actual shipping executable layouts.
 The installer always targets that root's dedicated `Halo_MCC_VR` folder.
 It refuses active MCC processes, path junctions/symbolic links and corrupt
-payload hashes. The launcher requests administrator access by default through
-its embedded Windows application manifest so protected Steam library folders
-can be written without a second manual elevation step. The launcher executable
+payload hashes. The launcher runs with the user's own rights (its manifest is
+`asInvoker`): the game it starts inherits its token, and an elevated game
+ignores an OpenXR runtime chosen with `XR_RUNTIME_JSON`, so VR would not start
+for a player who selects the runtime that way. If Windows refuses the install
+folder, the installer says to run the launcher as administrator for that
+install, and to open it normally afterwards to launch. The launcher executable
 is installed as a separate file beside the mod payload inside `Halo_MCC_VR`;
 it is not part of the source `ModFiles` tree; the separately packaged manual
 archives provide the legacy launch helper for manual users.
@@ -62,10 +99,20 @@ keys and calibration keys that still require runtime migration are not blindly
 appended. Unchecking keep-settings installs this build's defaults, with the
 previous primary config included in the same backup.
 
-**Check for updates** reads only the latest stable release from
-`https://api.github.com/repos/moistman42069/MCCVR-Halo-Build/releases/latest`.
-It never uses the retired pancreations origin. **Install update** downloads the
-single player ZIP over HTTPS and verifies GitHub's asset size and SHA-256 digest.
+Choosing a repository in **Update from repository** lists its releases, and **Check for
+updates** lists them again: Moistman's latest stable release, or the releases, prereleases
+included, of Nitsujack's or Godoy's fork. The launcher checks nothing until one of these is
+chosen. The menu starts on the source named by `release_channel` in the
+package's `BUILD-IDENTITY.txt` (`tools/package-candidate.ps1` takes it from the `origin`
+remote), then on the selected install's, then on the repository the launcher itself was built from. It never uses the retired pancreations
+origin. Each download must come from the chosen source's own release URLs. **Release page** opens
+the chosen version's page, or that source's release list when no release is chosen. **Install** downloads the
+single player ZIP over HTTPS and verifies GitHub's asset size and SHA-256 digest. With **Update this launcher from the selected
+release** ticked, the launcher it was started from is updated where it is as well, along with `ModFiles` if that folder
+is a package, and the launcher it replaces is kept as `HaloMCCVRLauncher.previous.exe`. The box is ticked for the newest
+release of the repository the launcher was built for and clear for anything else, which leaves that copy as the
+player's way forward; the player can change it either way. It is ticked and greyed for the install's own launcher,
+which every install replaces. If the copy cannot be replaced, the launcher says so and the installed update stands.
 ZIP extraction rejects traversal, absolute paths, duplicate Windows names,
 reserved device names, symlinks and excessive expanded sizes before extracting.
 The downloaded package's `ModFiles` manifest is verified again during install.
@@ -89,3 +136,45 @@ locked-destination rollback and strict GitHub JSON parsing.
 with valid and malicious local archives. Neither test launches or writes to a
 real MCC installation. Native Steam/Store launch behavior still requires user
 runtime testing; those paths were preserved, not runtime-accepted by these tests.
+
+## On its own
+
+Packaging also makes a `Standalone` ZIP: the launcher, a readme and its licenses, for pages that hand out the launcher
+rather than the full package. If it is attached to a release, its name must not end in `-Launcher.zip`: launchers take
+that file as the update and refuse a release with two, and older launchers cannot be told otherwise. It works with no package beside it: the font and a copy of the credits are built
+in, and it installs the mod by downloading a release.
+
+## Credits
+
+The credits column lists `CREDITS.txt` (`installer/CREDITS.txt` in the source), which ships in the mod folder. A launcher
+with none beside it reads the selected install's, then the copy built into it. Each
+person is a `name:` line and a `what:` line, plus any number of `link: Label https://address` lines that show as
+badges beside the name, a `section:` line heads the people after it, and `intro:` lines are text with no name, each starting a new line. Only `https` addresses count as links. Editing the installed copy shows on the next launcher start, and an update
+replaces it. Keys the launcher does not know are skipped, so later additions do not break older launchers.
+
+## Project Reclaimer
+
+The menu's last section starts Project Reclaimer, a standalone client that runs MCC's `halo3.dll`, with the VR
+mod. It needs `HaloMCCVR.dll` and `HaloMCCVRReclaimerRelay.dll` beside the launcher (or in its `ModFiles`
+folder); the relay is not in a player package.
+
+- **The path** of the game program (`project-reclaimer-client-v<version>.exe`, or `project-reclaimer-v<version>.exe`
+  before 0.9.23) is typed, pasted, or picked with
+  Browse. It is kept as the one line of `reclaimer_client.txt` beside the launcher and read back at the next
+  start. Clearing the field forgets it.
+- **Detect** looks, in this order, where the client's own join links point (it registers a `reclaimer:` link
+  for the user the first time it runs: `Software\Classes\reclaimer\shell\open\command`), at a client that is
+  running now, and in the folders around the launcher. With no path kept, the menu offers what Detect finds
+  when it opens and keeps it only once it is used.
+- **The line under the path** gives the client's version from the file itself (the client updates itself in
+  place and keeps its first name) and whether the VR mod has been run with that version.
+- **Launch Project Reclaimer** starts the client suspended, loads the relay and resumes it. Logs and settings
+  are the launcher folder's own: `HaloMCCVRLauncher.log`, `HaloMCCVRReclaimerRelay.log`, `HaloMCCVR.log`,
+  `halomccvr.cfg`.
+
+`HaloMCCVRReclaimerLauncher.exe` is the same program as a one-click start: in a folder with the relay and a
+client it can find (the kept path first), it starts that client with no menu. Where it finds none it opens
+the menu. `HaloMCCVRLauncher.exe` always opens the menu.
+
+Validation: `halomccvr_reclaimer_host_logic_tests` covers the path tidying and the join-link command. The menu
+was drawn and read off screen; the launch from the menu's button has not been run.

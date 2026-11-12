@@ -1,11 +1,12 @@
 #include "updater.h"
 #include <winhttp.h>
-#include <wincrypt.h>
 #include <shlobj.h>
 #include <fstream>
 #include <array>
+#include <algorithm>
+#include <set>
+#include <miniz.h>
 #pragma comment(lib, "winhttp.lib")
-#pragma comment(lib, "crypt32.lib")
 #pragma comment(lib, "shell32.lib")
 
 namespace mcc_installer {
@@ -17,7 +18,7 @@ std::wstring Widen(const std::string& value) {
     std::wstring text(size, 0); MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), static_cast<int>(value.size()), text.data(), size); return text;
 }
 struct HttpHandle { HINTERNET value{}; ~HttpHandle() { if (value) WinHttpCloseHandle(value); } };
-std::string Request(const std::wstring& url, const fs::path& destination, uint64_t limit) {
+std::string Request(const std::wstring& url, const fs::path& destination, uint64_t limit, int seconds = 30) {
     URL_COMPONENTS components{sizeof(components)};
     components.dwHostNameLength = components.dwUrlPathLength = components.dwExtraInfoLength = static_cast<DWORD>(-1);
     if (!WinHttpCrackUrl(url.c_str(), 0, 0, &components) || components.nScheme != INTERNET_SCHEME_HTTPS) throw std::runtime_error("Update URL must use HTTPS.");
@@ -26,7 +27,7 @@ std::string Request(const std::wstring& url, const fs::path& destination, uint64
     if (components.dwExtraInfoLength) path.append(components.lpszExtraInfo, components.dwExtraInfoLength);
     HttpHandle session{WinHttpOpen(L"HaloMCCVRLauncher/1.0", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0)};
     if (!session.value) throw std::runtime_error("Windows could not open the update connection.");
-    WinHttpSetTimeouts(session.value, 10000, 10000, 30000, 30000);
+    WinHttpSetTimeouts(session.value, std::min(seconds, 10) * 1000, std::min(seconds, 10) * 1000, seconds * 1000, seconds * 1000);
     HttpHandle connection{WinHttpConnect(session.value, host.c_str(), INTERNET_DEFAULT_HTTPS_PORT, 0)};
     HttpHandle request{connection.value ? WinHttpOpenRequest(connection.value, L"GET", path.c_str(), nullptr, WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE) : nullptr};
     if (!request.value) throw std::runtime_error("Cannot create update request.");
@@ -60,73 +61,133 @@ std::string Request(const std::wstring& url, const fs::path& destination, uint64
     if (!destination.empty()) { file.close(); if (!file) throw std::runtime_error("Cannot finish the update download."); }
     return text;
 }
-std::wstring QuotePowerShell(const fs::path& path) {
-    std::wstring escaped = L"'";
-    for (wchar_t c : path.wstring()) { escaped += c; if (c == L'\'') escaped += c; }
-    return escaped + L"'";
-}
-std::wstring QuoteArgument(const std::wstring& argument) {
-    std::wstring result = L"\""; unsigned slashes = 0;
-    for (wchar_t c : argument) {
-        if (c == L'\\') { ++slashes; continue; }
-        result.append(c == L'"' ? slashes * 2 + 1 : slashes, L'\\'); slashes = 0; result += c;
-    }
-    result.append(slashes * 2, L'\\'); return result + L'"';
-}
+struct ZipReader {
+    mz_zip_archive zip{}; FILE* file = nullptr; bool open = false;
+    ~ZipReader() { if (open) mz_zip_reader_end(&zip); if (file) fclose(file); }
+};
+// The release ZIP is read here, in this process, with miniz: no other program is started to do it. Every entry is
+// checked before the first file is written -- paths that leave the folder or name a drive, names Windows cannot keep
+// apart or reserves, symbolic links, encryption and sizes past the limits -- and each file's CRC is checked as it is
+// written. Nothing from the archive is run or loaded.
 void ExtractArchive(const fs::path& archive, const fs::path& output) {
-    // The built-in .NET ZIP reader validates every entry before extracting any
-    // file. Reject traversal, duplicate Windows paths, symlinks and zip bombs.
-    // Nothing from the archive is invoked or imported as code.
-    const std::wstring script = LR"($ErrorActionPreference='Stop'
-Add-Type -AssemblyName System.IO.Compression.FileSystem
-$archive=)" + QuotePowerShell(archive) + L"\n$root=" + QuotePowerShell(output) + LR"(
-$zip=[IO.Compression.ZipFile]::OpenRead($archive)
-try {
-  $base=[IO.Path]::GetFullPath($root).TrimEnd('\')+'\'
-  $seen=New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-  [long]$total=0
-  if($zip.Entries.Count -gt 4096){throw 'Too many ZIP entries'}
-  foreach($entry in $zip.Entries){
-    $name=$entry.FullName.Replace('/','\')
-    if(!$name -or $name.Length -gt 240 -or $name -match '(^\\|:|[<>"|?*\x00-\x1f])'){throw 'Unsafe ZIP path'}
-    foreach($part in $name.TrimEnd('\').Split('\')){if(!$part -or $part -eq '.' -or $part -eq '..' -or $part -match '[. ]$' -or $part -match '^(CON|PRN|AUX|NUL|COM[0-9]|LPT[0-9])(\.|$)'){throw 'Unsafe ZIP component'}}
-    $target=[IO.Path]::GetFullPath([IO.Path]::Combine($base,$name))
-    if(!$target.StartsWith($base,[StringComparison]::OrdinalIgnoreCase) -or !$seen.Add($target)){throw 'Conflicting ZIP path'}
-    if((($entry.ExternalAttributes -shr 16) -band 61440) -eq 40960){throw 'ZIP symlink is not allowed'}
-    $total+=$entry.Length
-    if($total -gt 1073741824 -or $entry.Length -gt 536870912){throw 'ZIP expanded size exceeded'}
-  }
-  [IO.Directory]::CreateDirectory($base)|Out-Null
-  foreach($entry in $zip.Entries){
-    $target=[IO.Path]::GetFullPath([IO.Path]::Combine($base,$entry.FullName.Replace('/','\')))
-    if(!$entry.Name){[IO.Directory]::CreateDirectory($target)|Out-Null;continue}
-    [IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($target))|Out-Null
-    [IO.Compression.ZipFileExtensions]::ExtractToFile($entry,$target,$false)
-  }
-}finally{$zip.Dispose()}
-)";
-    DWORD length = 0;
-    if (!CryptBinaryToStringW(reinterpret_cast<const BYTE*>(script.data()), static_cast<DWORD>(script.size() * sizeof(wchar_t)), CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, nullptr, &length)) throw std::runtime_error("Could not prepare archive extraction.");
-    std::wstring encoded(length, 0);
-    CryptBinaryToStringW(reinterpret_cast<const BYTE*>(script.data()), static_cast<DWORD>(script.size() * sizeof(wchar_t)), CRYPT_STRING_BASE64 | CRYPT_STRING_NOCRLF, encoded.data(), &length);
-    encoded.resize(wcslen(encoded.c_str()));
-    wchar_t system[MAX_PATH]{}; GetSystemDirectoryW(system, MAX_PATH);
-    const fs::path powershell = fs::path(system) / L"WindowsPowerShell" / L"v1.0" / L"powershell.exe";
-    auto command = QuoteArgument(powershell.wstring()) + L" -NoLogo -NoProfile -NonInteractive -EncodedCommand " + encoded;
-    STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
-    if (!CreateProcessW(powershell.c_str(), command.data(), nullptr, nullptr, FALSE, CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) throw std::runtime_error("Windows archive extraction is unavailable.");
-    CloseHandle(process.hThread);
-    const auto waited = WaitForSingleObject(process.hProcess, 120000);
-    DWORD code = 1;
-    if (waited == WAIT_OBJECT_0) GetExitCodeProcess(process.hProcess, &code);
-    else { TerminateProcess(process.hProcess, 1); WaitForSingleObject(process.hProcess, 5000); }
-    CloseHandle(process.hProcess);
-    if (code) throw std::runtime_error("The release ZIP could not be safely extracted. Keep the downloaded ZIP and install manually if needed.");
+    ZipReader reader;
+    if (_wfopen_s(&reader.file, archive.c_str(), L"rb") || !reader.file) throw std::runtime_error("Cannot open the release ZIP.");
+    std::error_code sizeError; const auto archiveSize = fs::file_size(archive, sizeError);
+    if (sizeError || !mz_zip_reader_init_cfile(&reader.zip, reader.file, archiveSize, 0)) throw std::runtime_error("The release ZIP is not a readable ZIP file.");
+    reader.open = true;
+    const mz_uint count = mz_zip_reader_get_num_files(&reader.zip);
+    if (count > 4096) throw std::runtime_error("Too many ZIP entries.");
+    wchar_t baseBuffer[MAX_PATH * 4]{};
+    if (!GetFullPathNameW(output.c_str(), static_cast<DWORD>(std::size(baseBuffer)), baseBuffer, nullptr)) throw std::runtime_error("Unsafe ZIP destination.");
+    std::wstring base = baseBuffer;
+    while (!base.empty() && base.back() == L'\\') base.pop_back();
+    base += L'\\';
+    const auto folded = [](std::wstring text) { CharLowerBuffW(text.data(), static_cast<DWORD>(text.size())); return text; };
+    const std::wstring baseFolded = folded(base);
+    struct Planned { mz_uint index; std::wstring target; bool directory; };
+    std::vector<Planned> plan; std::set<std::wstring> seen; uint64_t total = 0;
+    for (mz_uint i = 0; i < count; ++i) {
+        mz_zip_archive_file_stat stat{};
+        if (!mz_zip_reader_file_stat(&reader.zip, i, &stat) || !mz_zip_reader_is_file_supported(&reader.zip, i) || stat.m_is_encrypted)
+            throw std::runtime_error("Unsupported ZIP entry.");
+        const std::string utf8 = stat.m_filename;
+        const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
+        std::wstring name(length > 0 ? length : 0, 0);
+        if (length <= 0 || !MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), static_cast<int>(utf8.size()), name.data(), length))
+            throw std::runtime_error("Unsafe ZIP path.");
+        std::replace(name.begin(), name.end(), L'/', L'\\');
+        if (name.empty() || name.size() > 240 || name.front() == L'\\' ||
+            std::any_of(name.begin(), name.end(), [](wchar_t c) { return c < 0x20 || c > 0x7E || wcschr(L":<>\"|?*", c); }))
+            throw std::runtime_error("Unsafe ZIP path.");
+        std::wstring trimmed = name;
+        while (!trimmed.empty() && trimmed.back() == L'\\') trimmed.pop_back();
+        for (size_t at = 0; at <= trimmed.size();) {
+            const size_t next = std::min(trimmed.find(L'\\', at), trimmed.size());
+            const std::wstring part = trimmed.substr(at, next - at), upper = [&] { std::wstring u = part; CharUpperBuffW(u.data(), static_cast<DWORD>(u.size())); return u; }();
+            std::wstring stem = upper.substr(0, upper.find(L'.'));
+            while (!stem.empty() && stem.back() == L' ') stem.pop_back();   // "NUL .txt" is the device too
+            const bool reserved = stem == L"CON" || stem == L"PRN" || stem == L"AUX" || stem == L"NUL" ||
+                (stem.size() == 4 && (stem.starts_with(L"COM") || stem.starts_with(L"LPT")) && iswdigit(stem[3]));
+            if (part.empty() || part == L"." || part == L".." || part.back() == L'.' || part.back() == L' ' || reserved)
+                throw std::runtime_error("Unsafe ZIP component.");
+            at = next + 1;
+        }
+        wchar_t full[MAX_PATH * 4]{};
+        if (!GetFullPathNameW((base + name).c_str(), static_cast<DWORD>(std::size(full)), full, nullptr)) throw std::runtime_error("Unsafe ZIP path.");
+        std::wstring target = full;
+        while (target.size() > base.size() && target.back() == L'\\') target.pop_back();   // "a/" and "a" are one path
+        const std::wstring targetFolded = folded(target);
+        if (!targetFolded.starts_with(baseFolded) || !seen.insert(targetFolded).second) throw std::runtime_error("Conflicting ZIP path.");
+        if (((stat.m_external_attr >> 16) & 0xF000) == 0xA000) throw std::runtime_error("ZIP symlink is not allowed.");
+        if (!stat.m_is_directory && stat.m_comp_size == 0 && stat.m_uncomp_size != 0) throw std::runtime_error("A ZIP entry is damaged.");
+        total += stat.m_uncomp_size;
+        if (total > 1073741824ull || stat.m_uncomp_size > 536870912ull) throw std::runtime_error("ZIP expanded size exceeded.");
+        plan.push_back({i, target, stat.m_is_directory != 0 || name.back() == L'\\'});
+    }
+    // A file another entry would need as its folder ("a" beside "a/b") is a clash too: checked before any write.
+    for (const auto& entry : plan) {
+        if (entry.directory) continue;
+        const std::wstring prefix = folded(entry.target) + L'\\';
+        for (const auto& other : seen)
+            if (other.starts_with(prefix)) throw std::runtime_error("Conflicting ZIP path.");
+    }
+    fs::create_directories(base);
+    for (const auto& entry : plan) {
+        if (entry.directory) { fs::create_directories(entry.target); continue; }
+        fs::create_directories(fs::path(entry.target).parent_path());
+        if (fs::exists(entry.target)) throw std::runtime_error("Conflicting ZIP path.");
+        std::ofstream file(entry.target, std::ios::binary);
+        if (!file) { ThrowIfAntivirus(entry.target, true); throw std::runtime_error("Cannot write an extracted file."); }
+        const auto write = [](void* opaque, mz_uint64, const void* data, size_t size) -> size_t {
+            auto& out = *static_cast<std::ofstream*>(opaque);
+            out.write(static_cast<const char*>(data), static_cast<std::streamsize>(size));
+            return out ? size : 0;
+        };
+        if (!mz_zip_reader_extract_to_callback(&reader.zip, entry.index, write, &file, 0)) {
+            file.close(); ThrowIfAntivirus(entry.target);
+            throw std::runtime_error("A ZIP entry is damaged.");
+        }
+        file.close();
+        if (!file) { ThrowIfAntivirus(entry.target); throw std::runtime_error("Cannot finish an extracted file."); }
+    }
 }
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// DEV BUILDS ONLY, never packaged. HALOMCCVR_DEV_RELEASES names a folder that stands in for GitHub, so an update can be
+// rehearsed end to end without a public release: its releases.json is read as every repository's release list, and an
+// asset is copied from the file of its name there instead of downloaded. Everything after is the real update.
+fs::path DevReleases() {
+    wchar_t value[MAX_PATH]{};
+    const DWORD length = GetEnvironmentVariableW(L"HALOMCCVR_DEV_RELEASES", value, MAX_PATH);
+    return length && length < MAX_PATH ? fs::path(value) : fs::path{};
+}
+#endif
 }
 
-ReleaseUpdate CheckForUpdate() {
-    return ParseReleaseUpdate(Request(L"https://api.github.com/repos/moistman42069/MCCVR-Halo-Build/releases/latest", {}, 2 * 1024 * 1024));
+std::vector<ReleaseUpdate> ListReleases(const ReleaseChannel& channel) {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (const auto dev = DevReleases(); !dev.empty()) {
+        std::ifstream file(dev / L"releases.json", std::ios::binary);
+        return ParseReleaseList({std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()}, channel);
+    }
+#endif
+    const std::wstring repository = L"https://api.github.com/repos/" + Widen(channel.owner) + L"/MCCVR-Halo-Build/releases";
+    return ParseReleaseList(Request(repository + L"?per_page=30", {}, 2 * 1024 * 1024), channel);
+}
+bool HasTroubleshootingPage(const ReleaseChannel& channel) {
+    try { Request(L"https://api.github.com/repos/" + Widen(channel.owner) + L"/MCCVR-Halo-Build/contents/TROUBLESHOOTING.md", {}, 2 * 1024 * 1024, 5); return true; }
+    catch (const std::exception&) { return false; }
+}
+std::vector<ReleaseUpdate> ListLatestAcrossChannels(size_t& channel, std::wstring& passedOver) {
+    std::vector<std::vector<ReleaseUpdate>> lists(std::size(kReleaseChannels));
+    std::vector<std::string> dates(lists.size());
+    passedOver.clear();
+    for (size_t i = 0; i < lists.size(); ++i) {
+        try { lists[i] = ListReleases(kReleaseChannels[i]); dates[i] = lists[i].front().published; }
+        catch (const std::exception&) { passedOver += (passedOver.empty() ? L"" : L", "); passedOver += kReleaseChannels[i].label; }
+    }
+    channel = NewestPublished(dates);
+    if (channel == std::string::npos) throw std::runtime_error("No repository could be read. Check your connection, or open a release page for manual installation.");
+    return lists[channel];
 }
 void ExtractUpdateArchive(const fs::path& archive, const fs::path& output) {
     if (fs::exists(output)) throw std::runtime_error("Update extraction folder must be new.");
@@ -140,6 +201,10 @@ fs::path DownloadUpdate(const ReleaseUpdate& release) {
     if (fs::exists(cache)) throw std::runtime_error("Update cache already exists; retry.");
     fs::create_directories(cache);
     const auto archive = cache / L"release.zip";
+#if HALOMCCVR_DEV_DIAGNOSTICS
+    if (const auto dev = DevReleases(); !dev.empty()) fs::copy_file(dev / Widen(release.assetName), archive);
+    else
+#endif
     Request(Widen(release.url), archive, release.bytes);
     if (fs::file_size(archive) != release.bytes || Sha256File(archive) != release.sha256) throw std::runtime_error("Downloaded ZIP did not match GitHub's SHA-256/size. It will not be installed.");
     const auto unpacked = cache / L"package";
@@ -148,20 +213,5 @@ fs::path DownloadUpdate(const ReleaseUpdate& release) {
     if (!fs::is_regular_file(payload / L"INSTALL-MANIFEST.sha256"))
         throw std::runtime_error("This release predates automatic updates. The verified ZIP is in the local update cache; use its manual instructions.");
     return payload;
-}
-bool StartUpdateHelper(const fs::path& payload, const GameInstall& game, bool retainConfig, std::wstring& error) {
-    try {
-        wchar_t self[32768]{}; GetModuleFileNameW(nullptr, self, static_cast<DWORD>(std::size(self)));
-        // Run this already-trusted installer, not an arbitrary executable from
-        // the downloaded archive. It waits for the current launcher to exit.
-        const auto helper = payload.parent_path().parent_path() / L"HaloMCCVRUpdateHelper.exe";
-        fs::copy_file(self, helper, fs::copy_options::overwrite_existing);
-        if (Sha256File(self) != Sha256File(helper)) throw std::runtime_error("Update helper verification failed.");
-        auto command = QuoteArgument(helper.wstring()) + L" --apply-update " + QuoteArgument(payload.wstring()) + L" " + QuoteArgument(game.root.wstring()) +
-            (retainConfig ? L" 1 " : L" 0 ") + std::to_wstring(GetCurrentProcessId());
-        STARTUPINFOW startup{sizeof(startup)}; PROCESS_INFORMATION process{};
-        if (!CreateProcessW(helper.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr, helper.parent_path().c_str(), &startup, &process)) throw std::runtime_error("Could not start the update installer.");
-        CloseHandle(process.hThread); CloseHandle(process.hProcess); return true;
-    } catch (const std::exception& exception) { error = Widen(exception.what()); return false; }
 }
 } // namespace mcc_installer

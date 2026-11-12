@@ -26,6 +26,13 @@ inline constexpr uint32_t Button(int index) noexcept
 {
     return index >= 0 && index < 8 ? kButtons[index] : 0;
 }
+// The reload button a gesture presses from the per-title setting (weapon_reload_button_<title>), whose default
+// X is MCC's layout. Project Reclaimer's Halo 3 reloads on Right bumper and X does not reload there, so in
+// Reclaimer that default means Right bumper. Any other choice is the player's and is pressed as set.
+inline constexpr uint32_t ReloadButton(GameTitle title, int configured, bool projectReclaimer) noexcept
+{
+    return Button(projectReclaimer && title == GameTitle::Halo3 && configured == 0 ? 1 : configured);
+}
 struct Vec { float x{}, y{}, z{}; };
 struct Quat { float x{}, y{}, z{}, w{1}; };
 inline Vec operator+(Vec a, Vec b) noexcept { return {a.x+b.x,a.y+b.y,a.z+b.z}; }
@@ -48,6 +55,17 @@ inline bool Near(Vec a, Vec b, float r) noexcept { const Vec d=a-b; return Dot(d
 inline float Setting(float v,float low,float high,float fallback) noexcept
 { return std::isfinite(v)?std::clamp(v,low,high):fallback; }
 
+// The Campaign Evolved mod's over-the-shoulder weapon switch: where its slot is (metres from the head: to the
+// weapon side, down, back) and how close the hand has to come.
+inline constexpr float kOverShoulderSide=0.20f,kOverShoulderDown=0.10f,kOverShoulderBack=0.22f;
+inline constexpr float kOverShoulderRadius=0.16f;
+// A holster spot the player set with their own hand (location 3): each of its three distances from the head
+// is kept within this (metres). An arm is shorter; it only keeps a bad config value or a tracking jump from
+// putting the holster somewhere no hand can reach by a wide margin.
+inline constexpr float kHolsterCustomLimit=0.80f;
+// Armed in the menu and no grip came: the arming lapses after this long.
+inline constexpr uint64_t kHolsterCaptureTimeoutMs=30000;
+
 struct Settings
 {
     bool reload{}, holsters{}, leftHanded{};
@@ -59,13 +77,20 @@ struct Settings
     bool needleShake{};
     bool genericVisual{true};
     float shakeTravel{0.10f};
-    // 0 shoulder, 1 hip. A single reserve slot exchanges the two native guns.
+    // 0 shoulder, 1 hip, 2 over the shoulder (the Halo: Campaign Evolved VR mod's weapon-switch spot: higher
+    // and further back, where the hand goes when it reaches over the shoulder), 3 where the player put it
+    // (holsterCustom). A single reserve slot exchanges the two native guns.
     int holsterLocation{};
+    // Location 3: metres from the head, to the weapon side (mirrors with handedness), up, and forward, in the
+    // same level frame as the other spots (the way the head faces, flattened). The caller supplies it from
+    // the configuration; this default (the over-the-shoulder spot) is only what a bare Settings holds.
+    Vec holsterCustom{kOverShoulderSide,-kOverShoulderDown,-kOverShoulderBack};
     uint32_t reloadButton{0x4000}, swapButton{0x8000};
 };
 struct Sample
 {
     uint64_t now{}, space{};
+    uint64_t poseNow{}; // Predicted pose milliseconds; zero uses now for non-XR callers.
     uint32_t generation{};
     GameTitle title{GameTitle::None};
     bool ready{}, dualWield{};
@@ -101,32 +126,95 @@ struct Output
 inline bool BlocksSupportGrab(const Output& output) noexcept
 { return output.releaseTwoHand||output.consumeSupport; }
 
-inline bool Zones(const Sample& s,const Settings& c,Vec& pouch,Vec& holster) noexcept
+// The level frame every body zone is laid out in: the way the head faces, flattened, and the right of that.
+inline bool BodyFrame(Quat headRotation,Vec& forward,Vec& right) noexcept
 {
-    if(!Finite(s.head)||!Finite(s.primary)||!Finite(s.support)||
-       !Normal(s.headRotation)||!Normal(s.primaryRotation)) return false;
-    Vec forward=Rotate(s.headRotation,{0,0,-1}); forward.y=0;
+    if(!Normal(headRotation)) return false;
+    forward=Rotate(headRotation,{0,0,-1}); forward.y=0;
     const float n=Dot(forward,forward);
     if(!std::isfinite(n)) return false;
     if(n<0.04f)
     {
         // Looking straight down at the pouch must not destroy body yaw.
-        Vec side=Rotate(s.headRotation,{1,0,0});side.y=0;
+        Vec side=Rotate(headRotation,{1,0,0});side.y=0;
         const float length=Dot(side,side);
         if(!std::isfinite(length)||length<0.04f) return false;
         side=side*(1/std::sqrt(length));forward={side.z,0,-side.x};
     }
     else forward=forward*(1/std::sqrt(n));
-    const Vec right{-forward.z,0,forward.x};
+    right={-forward.z,0,forward.x};
+    return true;
+}
+// Where a hand is, as a custom holster spot (Settings::holsterCustom): the inverse of Zones for location 3.
+// False when the poses are not usable; each distance is kept within kHolsterCustomLimit.
+inline bool HolsterOffsetOfHand(Vec head,Quat headRotation,Vec hand,bool leftHanded,Vec& offset) noexcept
+{
+    Vec forward{},right{};
+    if(!Finite(head)||!Finite(hand)||!BodyFrame(headRotation,forward,right)) return false;
+    const Vec d=hand-head;
+    const float side=leftHanded?-1.0f:1.0f;
+    offset={std::clamp(Dot(d,right)*side,-kHolsterCustomLimit,kHolsterCustomLimit),
+            std::clamp(d.y,-kHolsterCustomLimit,kHolsterCustomLimit),
+            std::clamp(Dot(d,forward),-kHolsterCustomLimit,kHolsterCustomLimit)};
+    return Finite(offset);
+}
+// SETTING THE HOLSTER SPOT WITH A HAND. Armed from the menu; the next FRESH squeeze of the weapon grip (the
+// grip seen released since arming, then past the same 0.55 the gestures use) records where that hand is. A
+// grip already held when arming is not that squeeze. Lapses after kHolsterCaptureTimeoutMs; the caller holds
+// that clock (Defer) while the menu that armed it is still open, where no squeeze counts.
+class HolsterCapture
+{
+public:
+    enum class Result{Idle,Waiting,Captured,TimedOut};
+    void Arm(uint64_t now) noexcept { armed_=true;released_=false;holding_=false;armedAt_=now; }
+    void Cancel() noexcept { armed_=false;released_=false; }
+    void Defer(uint64_t now) noexcept { if(armed_) armedAt_=now; }
+    bool Armed() const noexcept { return armed_; }
+    // The weapon grip is not the game's while armed, nor while the capturing squeeze is still held.
+    bool ConsumesGrip() const noexcept { return armed_||holding_; }
+    Result Update(uint64_t now,bool posesValid,Vec head,Quat headRotation,Vec hand,float grip,
+                  bool leftHanded,Vec& offset) noexcept
+    {
+        const bool valid=std::isfinite(grip)&&grip>=0&&grip<=1;
+        if(holding_&&(!valid||grip<0.35f)) holding_=false;
+        if(!armed_) return Result::Idle;
+        if(now<armedAt_||now-armedAt_>kHolsterCaptureTimeoutMs) { Cancel();return Result::TimedOut; }
+        if(!valid) return Result::Waiting;
+        if(grip<0.35f) released_=true;
+        if(!released_||grip<=0.55f||!posesValid) return Result::Waiting;
+        if(!HolsterOffsetOfHand(head,headRotation,hand,leftHanded,offset)) return Result::Waiting;
+        armed_=false;released_=false;holding_=true;
+        return Result::Captured;
+    }
+private:
+    bool armed_{},released_{},holding_{};
+    uint64_t armedAt_{};
+};
+
+inline bool Zones(const Sample& s,const Settings& c,Vec& pouch,Vec& holster) noexcept
+{
+    if(!Finite(s.head)||!Finite(s.primary)||!Finite(s.support)||
+       !Normal(s.headRotation)||!Normal(s.primaryRotation)) return false;
+    Vec forward{},right{};
+    if(!BodyFrame(s.headRotation,forward,right)) return false;
     const float side=c.leftHanded?-1.0f:1.0f;
     const bool shoulder=c.pouchLocation==1;
     pouch=s.head+right*(-side*(shoulder?0.22f:0.25f))+forward*(shoulder?-0.13f:0.06f)+
         Vec{0,shoulder?-0.20f:-Setting(c.pouchDown,0.25f,0.85f,0.50f),0};
     pouch=pouch+right*(side*Setting(c.pouchOffset.x,-.40f,.40f,0))+
         Vec{0,Setting(c.pouchOffset.y,-.40f,.40f,0),0}+forward*Setting(c.pouchOffset.z,-.40f,.40f,0);
-    holster=c.holsterLocation==1
+    // Over the shoulder: Campaign Evolved's right-shoulder slot, 0.20 m to the weapon side, 0.10 m below the
+    // head and 0.22 m behind it (its holsterrs default).
+    // Custom: where the player put it. A value that is not a number falls back to the over-the-shoulder spot.
+    holster=c.holsterLocation==3
+        ?s.head+right*(side*Setting(c.holsterCustom.x,-kHolsterCustomLimit,kHolsterCustomLimit,kOverShoulderSide))+
+            Vec{0,Setting(c.holsterCustom.y,-kHolsterCustomLimit,kHolsterCustomLimit,-kOverShoulderDown),0}+
+            forward*Setting(c.holsterCustom.z,-kHolsterCustomLimit,kHolsterCustomLimit,-kOverShoulderBack)
+        :c.holsterLocation==1
         ?s.head+right*(side*0.27f)+Vec{0,-Setting(c.pouchDown,0.25f,0.85f,0.50f),0}
-        :s.head+right*(side*0.22f)+forward*(-0.13f)+Vec{0,-0.20f,0};
+        :c.holsterLocation==2
+            ?s.head+right*(side*kOverShoulderSide)+forward*(-kOverShoulderBack)+Vec{0,-kOverShoulderDown,0}
+            :s.head+right*(side*0.22f)+forward*(-0.13f)+Vec{0,-0.20f,0};
     return true;
 }
 
@@ -140,7 +228,8 @@ public:
     {
         const float travel=Setting(stroke,0.06f,0.20f,0.10f);
         if(!Finite(relative)||!now) { Reset();return false; }
-        if(!last_||now<=last_||now-last_>100||travel_!=travel)
+        if(last_&&now==last_&&travel_==travel)return false;
+        if(!last_||now<last_||now-last_>100||travel_!=travel)
         { Seed(relative,now,travel);return false; }
         const uint64_t previousAt=last_;
         const Vec previous=previous_;
@@ -201,6 +290,10 @@ public:
     void Cancel() noexcept
     { phase_=0;pulseUntil_=0;pulse_=0;armedP_=armedS_=false;available_=false;last_=0;singleShake_.Reset(); }
     bool HasClaimedGrip() const noexcept { return ownedP_||ownedS_; }
+    // A fast hand here is on its way to a gesture, not a punch (gesture_melee_logic.h).
+    bool PrimaryNearHolster() const noexcept { return nearHolster_; }
+    bool SupportNearPouch() const noexcept { return nearPouch_; }
+    bool HoldingMagazine() const noexcept { return phase_==1; }
     Output Update(const Sample& s,const Settings& c) noexcept
     {
         Output out{};
@@ -216,13 +309,17 @@ public:
             (c.reload&&weaponGraph_!=s.weaponGraph)||
             reloadButton_!=c.reloadButton||swapButton_!=c.swapButton||location_!=c.holsterLocation||
             pouchLocation_!=c.pouchLocation||pouchOffset_.x!=c.pouchOffset.x||
-            pouchOffset_.y!=c.pouchOffset.y||pouchOffset_.z!=c.pouchOffset.z;
+            pouchOffset_.y!=c.pouchOffset.y||pouchOffset_.z!=c.pouchOffset.z||
+            holsterCustom_.x!=c.holsterCustom.x||holsterCustom_.y!=c.holsterCustom.y||
+            holsterCustom_.z!=c.holsterCustom.z;
         const bool gap=!last_||s.now<last_||s.now-last_>200;
         const bool ready=s.ready&&s.now&&s.space&&s.generation&&TitleIndex(s.title)>=0&&
             (c.reload||c.holsters)&&!s.dualWield&&
             validP&&validS;
         Vec pouch{},holster{};
         const bool poses=Zones(s,c,pouch,holster);
+        nearHolster_=poses&&c.holsters&&Near(s.primary,holster,Setting(c.holsterRadius,0.08f,0.40f,0.20f));
+        nearPouch_=poses&&c.reload&&Near(s.support,pouch,Setting(c.zoneRadius,0.08f,0.40f,0.20f));
         const bool resumed=ready&&poses&&!available_;
         if(identity||gap||!ready||!poses||resumed)
         {
@@ -236,7 +333,7 @@ public:
         title_=s.title;generation_=s.generation;space_=s.space;left_=c.leftHanded;
         reload_=c.reload;holsters_=c.holsters;reloadButton_=c.reloadButton;
         swapButton_=c.swapButton;location_=c.holsterLocation;last_=s.now;
-        pouchLocation_=c.pouchLocation;pouchOffset_=c.pouchOffset;
+        pouchLocation_=c.pouchLocation;pouchOffset_=c.pouchOffset;holsterCustom_=c.holsterCustom;
         slide_=c.holsterSlide;click_=c.holsterClick;
         shake_=c.needleShake;weaponGraph_=s.weaponGraph;
         available_=ready&&poses;
@@ -367,7 +464,7 @@ public:
         if(c.reload&&c.needleShake&&c.reloadButton&&NeedleWeapon(s.title,s.weaponGraph)&&
            !s.otherAction&&!occupied&&!phase_&&!out.pickedMagazine&&!out.grabbedHolster)
         {
-            if(singleShake_.Update(s.primary-s.head,s.now,c.shakeTravel)&&s.now>=cooldown_)
+            if(singleShake_.Update(s.primary-s.head,s.poseNow?s.poseNow:s.now,c.shakeTravel)&&s.now>=cooldown_)
             {
                 pulse_=c.reloadButton;pulseUntil_=s.now+120;cooldown_=s.now+500;
                 out.reloadRequested=true;out.primaryHaptic=0.45f;
@@ -387,8 +484,9 @@ private:
     uint64_t space_{},last_{},started_{},cooldown_{},pulseUntil_{};
     uint32_t pulse_{},reloadButton_{},swapButton_{};
     int phase_{},location_{},pouchLocation_{};
-    Vec pouchOffset_{};
+    Vec pouchOffset_{},holsterCustom_{};
     bool left_{},reload_{},holsters_{},armedP_{},armedS_{},ownedP_{},ownedS_{},leftPouch_{},available_{};
+    bool nearHolster_{},nearPouch_{};
     bool slide_{true},click_{};
     bool shake_{};
     uint64_t weaponGraph_{},shakeAt_{};

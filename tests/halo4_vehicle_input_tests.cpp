@@ -24,6 +24,11 @@ static bool WaitForNativeDetourQuiescence(const void* const* functions,const voi
     DWORD64 image{};
     return RtlLookupFunctionEntry(reinterpret_cast<DWORD64>(functions[0]),&image,nullptr)&&!active.load();
 }
+// The free-camera frame's signal (game.cpp, aim_no_unit_logic.h): what the reader published, if anything.
+static unsigned noteCalls=0;
+static bool notePresent=false;
+static GameTitle noteTitle=GameTitle::None;
+static void AimNoUnit_Note(GameTitle noted,bool present) noexcept {++noteCalls;noteTitle=noted;notePresent=present;}
 #define __readgsqword FakeReadGs
 #define LOG(...) ((void)0)
 #include "../src/dll/halo4_vehicle_input.inl"
@@ -85,6 +90,27 @@ int main()
               std::strcmp(reason,"title")==0,
             "a foreign active title names itself as the rejection");
         title=GameTitle::Halo4;
+    }
+    // The free-camera signal: a read that passes every gate says whether the output user has a unit; a read
+    // refused before the getter says nothing.
+    {
+        const char* reason=nullptr;
+        Halo4VehicleInputState ex{};
+        noteCalls=0;
+        Check(Halo4ReadVehicleInputEx(ex,&reason)&&noteCalls==1&&notePresent&&noteTitle==GameTitle::Halo4,
+            "an admitted read publishes that the player has a unit");
+        outputUnit=UINT32_MAX;
+        noteCalls=0;reason=nullptr;
+        Halo4VehicleInputState sentinel{};sentinel.unit=17;
+        Check(!Halo4ReadVehicleInputEx(sentinel,&reason)&&reason&&std::strcmp(reason,"no-unit")==0&&
+              sentinel.unit==17&&noteCalls==1&&!notePresent&&noteTitle==GameTitle::Halo4,
+            "no unit for the output user (death) publishes Absent and still fails the read");
+        cinematic=true;
+        noteCalls=0;reason=nullptr;
+        Check(!Halo4ReadVehicleInputEx(sentinel,&reason)&&noteCalls==0,
+            "a read refused before the getter (a cinematic) publishes nothing: unknown, not dead");
+        cinematic=false;
+        outputUnit=unit;
     }
     const auto tlsSaved=tls,mappingSaved=mapping,bipedSaved=biped;
     const auto tableSaved=table,entriesSaved=entries;

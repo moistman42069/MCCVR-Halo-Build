@@ -3,7 +3,7 @@ void CaptureMuzzleQuery(int32_t input,int16_t zoom,bool direct)
     HaloCELocalPlayerState state{};RenderContext context{};
     if(muzzleInstalled.load()&&!muzzleFaulted.load()&&HaloCEControls_GetLocalPlayerState(state)&&
         input==state.inputUser&&LocalOnFootShooter(state.unit)&&HaloCE_GetGameplayContext(context)&&
-        context.tracking.controllers.gunBarrelAim)
+        (context.tracking.controllers.gunBarrelAim||context.tracking.controllers.muzzleShots))
         muzzleQueryContext={generation.load(),state.unit,input,zoom,direct,GetTickCount64()};
 }
 __declspec(noinline) void __fastcall MuzzleQueryHook(int32_t input,int16_t zoom,Vec3* control,void* target)
@@ -36,7 +36,7 @@ bool ApplyMuzzleMarker(uint32_t object,int16_t count,void* markers,int16_t capac
         query.at<muzzleInstalledAt||now<query.at||now-query.at>100||
         !modernRayHook.original||!targetInstalled.load()||targetRetiring.load())return false;
     weapon_muzzle::Receipt receipt{};
-    if(!ReadMuzzle(query.unit,request.weapon,request.barrel,receipt))return false;
+    if(!ReadMuzzle(query.unit,request.weapon,request.barrel,receipt,true))return false;
     void* storage=MuzzleTargetStorage(query.unit);if(!storage)return false;
     auto& shot=muzzleShot;shot={};shot.active=true;shot.unit=query.unit;
     std::memcpy(&shot.position,receipt.ray.position,12);std::memcpy(&shot.direction,receipt.ray.direction,12);
@@ -45,6 +45,45 @@ bool ApplyMuzzleMarker(uint32_t object,int16_t count,void* markers,int16_t capac
     // with native camera projection and weapon offset disabled for this ray.
     reinterpret_cast<ModernRayFn>(modernRayHook.original)(query.unit,&shot.position,&shot.direction,&velocity,nullptr,false,false);
     if(!Finite(shot.position)||!Finite(shot.direction))return false;
+    // SHOTS FROM THE MUZZLE (sight_layer.h): keep the origin the obstruction check left, but fly through the
+    // converged point instead of along the barrel. A refusal refuses the barrel shot: it leaves the eye.
+    // Only the barrel aim fires along the barrel: when this second read fails, or the keys changed since
+    // ReadMuzzle admitted the shot, the shot is refused (it leaves the eye), as in the other titles.
+    {
+        RenderContext context{};
+        if(!HaloCE_GetGameplayContext(context))return false;
+        if(!context.tracking.controllers.gunBarrelAim)
+        {
+            if(!context.tracking.controllers.muzzleShots)return false;
+            Vec3 head{},dir{},eye{};
+            // The carrier the aim itself uses (ControllerShotDirection): with the persistent support grip
+            // detached, the independent one-hand pose. Unreadable while the grip is wired: the eye shot.
+            HaloCELocalPlayerState player{};
+            const bool wired=VR_SupportGripWiredForTitle(GameTitle::HaloCE);
+            const bool havePlayer=HaloCEControls_GetLocalPlayerState(player);
+            const CeSupportInvocation support=havePlayer?CeEvaluateSupportInvocation(wired,player,
+                context.tracking.controllers.primaryAimSupportDerived):CeSupportInvocation{};
+            const bool detach=support.detach;
+            if((wired&&!havePlayer)||(detach&&!context.tracking.controllers.independentPrimaryAim.valid))
+            {Sight_NoteMuzzleShotUnconverged(GameTitle::HaloCE);return false;}
+            const ControllerPose& carrier=detach?context.tracking.controllers.independentPrimaryAim:
+                context.tracking.controllers.primaryAim;
+            if(context.tracking.controllers.controlsPresentationBlocked||
+                !BuildSightGeometry(context.camera,context.tracking,context.reference,
+                    carrier,context.unitsPerMeter,context.positional,head,dir,eye))
+            {Sight_NoteMuzzleShotUnconverged(GameTitle::HaloCE);return false;}
+            const float h[3]{head.x,head.y,head.z},d[3]{dir.x,dir.y,dir.z},e[3]{eye.x,eye.y,eye.z};
+            float through[3]{shot.direction.x,shot.direction.y,shot.direction.z};
+            // FLAT PARITY: the point is a world point fixed at this context's camera; the round leaves after the fire
+            // tick's move, so it flies through P moved with the eye to the fire (CeFireEyeForShot).
+            const SightCameraSample camera=CeContextCameraSample(context);
+            if(!Sight_AimMuzzleShotFromRay(GameTitle::HaloCE,TitleAdapter_GetGeneration(GameTitle::HaloCE),h,d,e,
+                receipt.ray.position,&shot.position.x,through,receipt.ray.up,nullptr,&camera))return false;
+            shot.direction={through[0],through[1],through[2]};
+            // Dev SHOT LAG: the muzzle shot against the point it was aimed through.
+            Sight_NoteShotLagFromRay(GameTitle::HaloCE,SightShotPath::Muzzle,&shot.position.x,through,h,d,e,false);
+        }
+    }
     alignas(8) unsigned char target[0x10]{};Vec3 control{};shot.query=true;
     __try
     {

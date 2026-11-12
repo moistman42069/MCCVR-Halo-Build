@@ -225,7 +225,9 @@ kit, retail = images['halo4_tag_test.exe'], images['halo4.dll']
 source = (ROOT / 'src/dll/native_vr_actions_h4.inl').read_text()
 for name, rva in [('converterPattern', 0x1201A8), ('consumerEntryPattern', 0xA2670),
                   ('consumerReloadPattern', 0xA5264), ('padProofPattern', 0x56E79),
-                  ('controllerLoopPattern', 0x56FE0)]:
+                  ('controllerLoopPattern', 0x56FE0), ('abilityEntryPattern', 0xA21D0),
+                  ('abilitySelectPattern', 0xA2323), ('abilityEquipmentSitePattern', 0xA4124),
+                  ('abilitySprintSitePattern', 0xA417A)]:
     unique_at(pattern(name), rva)
 descriptor = re.search(r'\{GameTitle::Halo4,[^\n]+,\s*0x13F5CC,0xA2818,\s*"([^"]+)",\s*"([^"]+)"', reader)
 assert descriptor
@@ -251,6 +253,9 @@ call(retail, 0x56EED, 0x1201A8)
 call(retail, 0x56F62, 0x1201A8)
 call(retail, 0xA526C, 0x13F5CC)
 call(retail, 0xA5291, 0x13F5CC)
+# The builder's ability helper: the equipment and the sprint calls land on it.
+call(retail, 0xA4155, 0xA21D0)
+call(retail, 0xA41AF, 0xA21D0)
 assert 0xA2826 + struct.unpack_from('<i', retail, 0xA2822)[0] == 0x2E959D4
 assert 0x56E87 + struct.unpack_from('<i', retail, 0x56E83)[0] == 0x28ACA74
 assert 0x56E45 + struct.unpack_from('<i', retail, 0x56E41)[0] + 0x3B4 == 0x28ACA74
@@ -260,7 +265,9 @@ pe = pefile.PE(str(INPUTS / 'halo4.dll'), fast_load=True)
 pdata = pe.OPTIONAL_HEADER.DATA_DIRECTORY[3]
 assert any(struct.unpack_from('<II', retail, offset) == (0xA2670, 0xA55EE)
            for offset in range(pdata.VirtualAddress, pdata.VirtualAddress + pdata.Size, 12))
-checks += 13
+assert any(struct.unpack_from('<II', retail, offset) == (0xA21D0, 0xA266E)
+           for offset in range(pdata.VirtualAddress, pdata.VirtualAddress + pdata.Size, 12))
+checks += 16
 
 # H2 owns a different ABI: six-argument abstraction updater and packed copier.
 for name, expected in {

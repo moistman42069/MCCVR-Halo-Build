@@ -1,7 +1,13 @@
 #include "haloce_stereo_core.h"
 #include "haloce_controls.h"
+#include "haloce_vehicle_cameras.h"
+#include "../common/haloce_vehicle_leash_logic.h"
+#include "haloce_head_relative.h"
+#include "../common/haloce_first_person_logic.h"
 #include "physical_crouch_camera.h"
 uint64_t VR_PhysicalCrouchEpoch() noexcept;
+float VR_RecenterStandingLiftM(GameTitle title) noexcept;   // vr.h
+uint64_t Sight_NowUs();   // sight_layer.h: the one sight clock the gameplay context's camera is stamped on
 #include "haloce_native_bindings.h"
 #include "haloce_hud_layout.h"
 #include "haloce_hud_target.h"
@@ -12,10 +18,13 @@ uint64_t VR_PhysicalCrouchEpoch() noexcept;
 #include "../common/haloce_classic_view_pair.h"
 #include "../common/haloce_dlss_logic.h"
 #include "../common/haloce_dlss_contract.h"
+#include "../common/hud_visibility.h"
 #include "../common/log.h"
+#include "../common/shot_lag_logic.h"
 #include "game.h"
 #include "title_adapter.h"
 #include "hook_quiescence.h"
+#include "host_unload_gate.h"
 #include "roomscale.h"
 #include "../common/minhook_lifecycle.h"
 #include <windows.h>
@@ -44,6 +53,9 @@ constexpr bool kCeIntegratedBaseVrEnabled=false;
 // with Classic source/bootstrap and isolated HUD/mirror corrections retained.
 // Pinned native refresh/admission and production fixtures pass; headset pending.
 constexpr bool kCeSceneVisibilityBaseVrEnabled=true;
+// CE's body following (roomscale), enabled so that every title has roomscale. It is gated at run time
+// by roomscale_movement (the rig's roomscaleEnabled) exactly like the other titles, and by
+// physical_running (the rig's physicalRunningEnabled) for physical running.
 // CE uses the same guarded native walking feedback as H3. Both renderers
 // prepare one horizontal tracking reference before constructing either eye.
 constexpr bool kCeExperimentalRoomscaleEnabled=true;
@@ -70,6 +82,12 @@ std::array<Hook,Count> hooks;
 NativeBindings bindings;
 HMODULE moduleReference{};
 std::atomic<bool> installed{},active{},armed{},retiring{},trackingEnabled{};
+// THE GAME'S END (host_unload_gate.h). Set by the unload gate when MCC loads halo1.dll by name after the camera has
+// been still for half a second: the game has ended and MCC is loading the DLL again for its menus. The core then
+// tears down and lets go of the DLL, so it unloads and the next game starts in a fresh image. Held past the game's
+// end, the old image was taken again: the next game's startup ran in a module whose shutdown had already run, and
+// crashed a second into the load (halo1.dll keeps engine state in statics that only a fresh image resets).
+std::atomic<bool> teardownRequested{};
 std::atomic<bool> gameplayBridgeVerified{};
 std::atomic<bool> hudTargetBindingsVerified{};
 std::atomic<uint32_t> callbacks{},generation{};
@@ -237,10 +255,29 @@ struct GameplayCameraSample
     uint64_t capturedAtMs{};
 };
 Snapshot<GameplayCameraSample> gameplayCamera;
+// Flat parity: the published camera's track (shot_lag::EyeTrack), on the sight clock. Both renderers publish through
+// here; the lock keeps the track whole whichever thread does.
+shot_lag::EyeTrack gameplayCameraTrack;
+uint32_t gameplayCameraTrackGeneration{};
+SRWLOCK gameplayCameraTrackLock=SRWLOCK_INIT;
 void PublishGameplayContext(const RenderContext& context) noexcept
 {
-    if (Valid(context.camera)&&HaloCE_RenderContextCurrent(context))
-        gameplayCamera.Publish({context,GetTickCount64()});
+    if (!Valid(context.camera)||!HaloCE_RenderContextCurrent(context)) return;
+    RenderContext stamped=context;
+    const float eye[3]{context.camera.position.x,context.camera.position.y,context.camera.position.z};
+    float velocity[3]{};
+    AcquireSRWLockExclusive(&gameplayCameraTrackLock);
+    if(gameplayCameraTrackGeneration!=context.tracking.generation)
+    {gameplayCameraTrack.Reset();gameplayCameraTrackGeneration=context.tracking.generation;}
+    stamped.cameraStampUs=Sight_NowUs();
+    gameplayCameraTrack.Push(stamped.cameraStampUs,eye);
+    stamped.cameraVelValid=gameplayCameraTrack.Velocity(120000,30000,velocity);
+    ReleaseSRWLockExclusive(&gameplayCameraTrackLock);
+    stamped.cameraVel=stamped.cameraVelValid?Vec3{velocity[0],velocity[1],velocity[2]}:Vec3{};
+    gameplayCamera.Publish({stamped,GetTickCount64()});
+    // The same frame's head, for what is drawn against where the player LOOKS (the motion tracker,
+    // haloce_head_relative.cpp): this stock centre, tracking sample and reference, on this sight-clock stamp.
+    HaloCEHeadRelative_PublishHead(stamped,Anniversary());
 }
 void FollowRoomscale(const Camera& source,const Tracking& tracking,Reference& frozen,
     float scale,bool positional,uint64_t revision) noexcept
@@ -264,13 +301,24 @@ void FollowRoomscale(const Camera& source,const Tracking& tracking,Reference& fr
         tracking.headOrientation.z,tracking.headOrientation.w};
     const float forward[]{heading.x,heading.y,heading.z};
     float position[]{frozen.position.x,frozen.position.y,frozen.position.z};
-    Roomscale_Camera(GameTitle::HaloCE,positional&&!tracking.controllers.controlsPresentationBlocked&&
-        Game_RoomscaleCameraAllowed(GameTitle::HaloCE),body,head,orientation,forward,position,scale);
+    Roomscale_Camera(GameTitle::HaloCE,
+        !positional ? Roomscale_Refuse(roomscale_admission::Refusal::Disabled)
+        : tracking.controllers.controlsPresentationBlocked ? Roomscale_Refuse(roomscale_admission::Refusal::Menu)
+        : Game_RoomscaleCameraVerdict(GameTitle::HaloCE),body,head,orientation,forward,position,scale);
     const Vec3 next{position[0],position[1],position[2]};
     if (!Finite(next)||!Current()||revision!=referenceRevision.load()||recenter.load()) return;
     frozen.position=next;
     reference=frozen;
     publishedReference.Publish({frozen,revision});
+}
+// THE SEAT'S VIEW HEADING (Reference::seatHeading, haloce_render_logic.h): set or cleared on the tracking
+// reference once per frame, before the frame's eyes, controllers, sight ray and publications are built from it, so
+// every consumer of BuildTrackingFrame maps the room through the same heading.
+void ApplySeatHeading(Reference& frozen) noexcept
+{
+    Vec3 heading{};
+    frozen.seatHeadingValid=HaloCEControls_SeatHeading(frozen.generation,heading);
+    frozen.seatHeading=frozen.seatHeadingValid?heading:Vec3{};
 }
 // A per-frame effective reference applies one vertical camera correction to
 // both eyes, controllers and native aim. The user's calibration stays intact.
@@ -284,6 +332,54 @@ void ApplyPhysicalCrouchReference(const Tracking& tracking,Reference& frozen,
         VR_PhysicalCrouchEpoch(),down,positional&&!tracking.controllers.controlsPresentationBlocked);
     if(std::isfinite(correction)&&correction>0&&correction<=std::max(0.f,down))
         frozen.position.y-=correction/scale;
+}
+// A CHASE CAMERA'S LEASH (haloce_vehicle_leash_logic.h): the vehicle cameras publish the box the head stays inside
+// with each placement; this frame's reference holds the head there. One read a frame; nothing while no camera sets one.
+void ApplyVehicleCameraLeash(const Camera& source,const Tracking& tracking,Reference& frozen,
+    float scale,bool positional) noexcept
+{
+    vehicle_camera_frame::Basis carrier{};vehicle_camera_frame::LeashBox box{};
+    if(!positional||!Game_HaloCEVehicleCameraLeash(frozen.generation,carrier,box))return;
+    if(haloce_vehicle_leash::LeashReference(source,tracking,scale,positional,carrier,box,frozen))
+        Game_HaloCEVehicleCameraLeashHeld();
+}
+// AIM FRAME ZOOM (game.cpp Game_AimFrameForEyes), both renderers, once a frame: player control's zoom level is noted,
+// and the frame is asked for from the centre eye `centre`, along the intent ray the converged aim is written from (the
+// stock camera `stock`, this frame's tracking and its reference), at `stock`'s own vertical field of view in the shape
+// `shape` (the eye raster's). Without a centre (`haveCentre` false) the frame eases out. True: `out` holds its cameras.
+bool CeAimFrame(const Camera& stock,const Camera& centre,bool haveCentre,const Tracking& tracking,
+    const Reference& frozen,float scale,bool positional,float shape,AimFrameEyes& out) noexcept
+{
+    int16_t level=-1;
+    if (HaloCEControls_ZoomLevel(tracking.generation,level)) Game_NoteZoomLevel(GameTitle::HaloCE,level);
+    Vec3 head{},direction{},engineEye{};
+    const auto& aim=tracking.controllers.primaryAim;
+    const bool ready=haveCentre&&aim.valid&&!tracking.controllers.controlsPresentationBlocked&&
+        std::isfinite(shape)&&shape>0&&
+        BuildSightGeometry(stock,tracking,frozen,aim,scale,positional,head,direction,engineEye);
+    const float nativeY=std::tan(stock.verticalFov*0.5f);
+    const float c[3]{centre.position.x,centre.position.y,centre.position.z};
+    const float up[3]{centre.up.x,centre.up.y,centre.up.z};
+    const float forward[3]{direction.x,direction.y,direction.z};
+    float offsets[2][3]{};
+    for (int eye=0;eye<2;++eye)
+    {
+        const Vec3 offset=EyeOffsetInHead(tracking,eye);
+        offsets[eye][0]=offset.x; offsets[eye][1]=offset.y; offsets[eye][2]=offset.z;
+    }
+    GameAimFramePass pass{};
+    if (!Game_AimFrameForEyes(GameTitle::HaloCE,c,up,offsets,ready?nativeY*shape:0.0f,nativeY,forward,pass))
+        return false;
+    AimFrameEyes frame{};
+    for (int eye=0;eye<2;++eye)
+    {
+        frame.position[eye]={pass.position[eye][0],pass.position[eye][1],pass.position[eye][2]};
+        frame.forward[eye]={pass.forward[eye][0],pass.forward[eye][1],pass.forward[eye][2]};
+        frame.up[eye]={pass.up[eye][0],pass.up[eye][1],pass.up[eye][2]};
+    }
+    frame.tanX=pass.tanX; frame.tanY=pass.tanY; frame.widthDeg=pass.widthDeg; frame.stereo=pass.stereo;
+    out=frame;
+    return true;
 }
 #include "haloce_classic_runtime.inl"
 bool ReadAnniversaryNativeCenter(const SaberCamera& nativeCenter,Camera& center) noexcept
@@ -316,11 +412,33 @@ void PublishAnniversaryGameplayContext(const SaberCamera& nativeCenter,
 void PrepareAnniversaryTrackingReference(BuildScope& scope,const SaberCamera& native) noexcept
 {
     Camera center{};
-    if(ReadAnniversaryNativeCenter(native,center))
+    const bool haveCenter=ReadAnniversaryNativeCenter(native,center);
+    if(haveCenter)
         FollowRoomscale(center,scope.views.tracking,scope.views.reference,
             scope.views.unitsPerMeter,scope.views.positional,scope.referenceRevision);
     ApplyPhysicalCrouchReference(scope.views.tracking,scope.views.reference,
         scope.views.unitsPerMeter,scope.views.positional);
+    if(haveCenter)
+        ApplyVehicleCameraLeash(center,scope.views.tracking,scope.views.reference,
+            scope.views.unitsPerMeter,scope.views.positional);
+}
+// AIM FRAME ZOOM (CeAimFrame): while the game is zoomed this frame's construction stages the frame's cameras instead of
+// the eyes, at the stock camera's own field of view in the eye raster's shape. Anniversary has no single pass: both eyes
+// draw the frame (one camera twice, or each eye's in 3D). Eye 0's append, once the frame's tracking reference is set;
+// the outcome is the construction's (BuilderHook).
+void AnniversaryAimFrame(BuildScope& scope,const SaberCamera& native) noexcept
+{
+    auto& views=scope.views;
+    views.aimFrame=false;
+    Camera stock{},centre{};
+    const bool haveCentre=views.CentreEye(native,stock,centre);
+    const float shape=views.height?static_cast<float>(views.width)/static_cast<float>(views.height):0.0f;
+    AimFrameEyes frame{};
+    if (!CeAimFrame(stock,centre,haveCentre,views.tracking,views.reference,views.unitsPerMeter,views.positional,
+            shape,frame)) return;
+    views.frame=frame;
+    views.centre=centre;
+    views.aimFrame=true;
 }
 uintptr_t AppendBody(uintptr_t list,const SaberCamera* source,uint32_t flags,int32_t index,
     uint64_t a5,uint64_t a6,uint64_t a7,uint64_t a8,uint64_t a9,uint64_t a10,
@@ -339,6 +457,7 @@ uintptr_t AppendBody(uintptr_t list,const SaberCamera* source,uint32_t flags,int
             // The append input is still the unmodified center, in Saber units.
             // Recover the verified native bridge, never use an already tracked eye.
             PrepareAnniversaryTrackingReference(*scope,native);
+            AnniversaryAimFrame(*scope,native);
         }
         valid=valid&&scope->views.PrepareEye(eye,native,
                 [](SaberCamera& camera) { return RebuildNativeCamera(bindings,camera); });
@@ -396,7 +515,16 @@ uintptr_t __fastcall BuilderHook(uintptr_t arg,SaberViewPair* list,uint8_t secon
     if (force&&constructTrackedViews)
     {
         if (recenter.exchange(false)||reference.generation!=gen||reference.spaceEpoch!=tracking.spaceEpoch)
+        {
             reference={tracking.headPosition,tracking.headOrientation,tracking.spaceEpoch,gen};
+            reference.position.y+=VR_RecenterStandingLiftM(GameTitle::HaloCE);   // the standing height, not a caught crouch
+        }
+        ApplySeatHeading(reference);
+        // Roomscale (body following) in the Anniversary renderer is NOT done here: the native camera for
+        // THIS frame is built inside ConstructViews, after the reference is fixed. It runs at eye zero's
+        // append instead (PrepareAnniversaryTrackingReference), from this frame's untracked native centre,
+        // before either eye is prepared, followed by the physical crouch correction. A second follow here
+        // from the previous frame's published centre would step Roomscale_Camera twice per frame.
         Wanted raster{};
         construction.list=address;
         construction.referenceRevision=revisionBeforeBuild;
@@ -411,12 +539,22 @@ uintptr_t __fastcall BuilderHook(uintptr_t arg,SaberViewPair* list,uint8_t secon
     if (!scoped) return nativeResult;
     Prepared result{address,gen,force,false,{}};
     result.referenceRevision=revisionBeforeBuild;
+    // AIM FRAME ZOOM: what the construction staged is what the receipt says this frame is; a frame asked for and not
+    // built (the rebuilt camera not the one asked for, the publication refused) is a refusal.
+    const bool aimFrame=force&&constructTrackedViews&&construction.views.aimFrame;
+    if (aimFrame)
+        tracking.aimFrame={true,construction.views.frame.tanX,construction.views.frame.tanY,
+            construction.views.frame.widthDeg};
     if (force)
     {
         SaberViewPair source{},rasterSource{},committed{}; StagedViewPair staged{};
         if (!constructTrackedViews&&
             (recenter.exchange(false)||reference.generation!=gen||reference.spaceEpoch!=tracking.spaceEpoch))
+        {
             reference={tracking.headPosition,tracking.headOrientation,tracking.spaceEpoch,gen};
+            reference.position.y+=VR_RecenterStandingLiftM(GameTitle::HaloCE);
+        }
+        if (!constructTrackedViews) ApplySeatHeading(reference);
         if (!recenter.load(std::memory_order_acquire)&&
             revisionBeforeBuild==referenceRevision.load(std::memory_order_acquire))
             publishedReference.Publish({constructTrackedViews?construction.views.reference:reference,revisionBeforeBuild});
@@ -447,6 +585,7 @@ uintptr_t __fastcall BuilderHook(uintptr_t arg,SaberViewPair* list,uint8_t secon
                 constructTrackedViews?construction.views.positional:Game_IsPositionalTracking());
         }
         else dropped.fetch_add(1,std::memory_order_relaxed);
+        if (aimFrame) Game_AimFrameOutcome(GameTitle::HaloCE,!result.valid);
     }
     preparedLists[slot].Publish(result);
     return nativeResult;
@@ -779,10 +918,14 @@ void FrameBody(uintptr_t arg,uint32_t flags)
     const bool previousMaterialMask=anniversaryMaterialMasked;
     if (previous) anniversaryMaterialMasked=true;
     if (!previous) frameScope=&scope;
+    // AIM FRAME ZOOM: the frame's passes draw the game's own HUD layout and crosshair (haloce_hud*.cpp).
+    const bool aimFrame=!previous&&scope.capture&&scope.prepared.receipt.tracking.aimFrame.active;
+    if (aimFrame) Game_SetAimFramePass(true);
     bool returned=false;
     __try { original(arg,flags); returned=true; }
     __finally
     {
+        if (aimFrame) Game_SetAimFramePass(false);
         if (!previous)
         {
             if (returned&&scope.capture&&Current()&&Anniversary()&&
@@ -1018,7 +1161,9 @@ bool Remove() noexcept
     // Keep copy protection installed until native reset/stock preparation has
     // retired every manufactured list. An inactive title may retain these
     // dormant hooks until its next reset; never remove them under a queued eye.
-    if (installed.load()&&(callbacks.load()||HasSyntheticLists())) return false;
+    // At the game's end no reset comes and no queued list is drawn again: the
+    // renderer has stopped and its DLL is being loaded again for MCC's menus.
+    if (installed.load()&&(callbacks.load()||(HasSyntheticLists()&&!teardownRequested.load()))) return false;
     for (auto& hook:hooks) if (hook.enabled)
     {
         const auto status=MCCVR_DisableHookForRetirement(hook.target);
@@ -1046,7 +1191,10 @@ bool Remove() noexcept
     }
     if (!cache.Reset()) return false;
     resources.InvalidateAll();
-    if (moduleReference) { FreeLibrary(moduleReference); moduleReference=nullptr; }
+    // The reference goes last, and the unload gate is told after it has gone: a load of halo1.dll waiting for this
+    // teardown may go on, and finds the old image unloaded.
+    if (moduleReference)
+    { const HMODULE held=moduleReference; FreeLibrary(held); moduleReference=nullptr; HostUnloadGate_Unpin(held); }
     bindings={}; installed=false; generation=0; allocated.Publish({});
     frameDiagnostic.Publish({});
     completedFrame.Publish({}); renderReady.Publish({}); wanted.Publish({});
@@ -1059,6 +1207,10 @@ bool Install(uintptr_t base,size_t size,uint32_t gen) noexcept
 {
     const char* failure="module retention";
     if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,reinterpret_cast<LPCWSTR>(base),&moduleReference)) return false;
+    // MCC's reload of halo1.dll at the game's end waits for this teardown; the gate asks for it once the camera
+    // (lastCameraMs, both renderers, a pause included) has been still for half a second.
+    teardownRequested.store(false,std::memory_order_release);
+    HostUnloadGate_Pin(moduleReference,&teardownRequested,&lastCameraMs,"Halo CE",true);
     if (!ResolveNativeBindings(base,size,gen,bindings,failure))
     { LOG("CE core stock fallback: %s",failure); Remove(); return false; }
     const NativeContractSet gameplayContracts{contract::gameplay_bridge::entries,
@@ -1139,8 +1291,12 @@ void HaloCE_RequestRecovery(uint32_t gen) noexcept
 bool HaloCE_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActive,bool allowInitialInstall) noexcept
 {
     active.store(isActive,std::memory_order_release);
-    if (moduleReference&&(!isActive||gen!=generation.load()||base!=bindings.base||retiring.load()))
+    if (moduleReference&&(!isActive||gen!=generation.load()||base!=bindings.base||retiring.load()||
+        teardownRequested.load(std::memory_order_acquire)))
     {
+        if (teardownRequested.load(std::memory_order_acquire)&&!retiring.load(std::memory_order_acquire))
+            LOG("CE core: MCC is loading halo1.dll again after the game stopped drawing (the game ended); tearing "
+                "down so the next game starts in a fresh image");
         if (armed.exchange(false)) LOG("CE core disarmed by HaloCE_Poll: title/generation retirement");
         TitleAdapter_PublishLifecycle(GameTitle::HaloCE,generation.load(),{installed.load(),false,true,0});
         if (!Remove()) return false;
@@ -1190,10 +1346,11 @@ bool HaloCE_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActive,bool allo
             ce_resolution::rebuilds.load(),ce_resolution::failures.load(),ce_resolution::lastFailure.load());
         LOG("CE DIAG gen=%u installed=%d armed=%d built=%llu pairs=%llu dropped=%llu stock=%llu descriptorMiss=%llu previewFolded=%llu stage=%u sceneRefresh=%llu",
             gen,installed.load(),armed.load(),built.load(),captured.load(),dropped.load(),stock.load(),descriptorMiss.load(),previewFolded.load(),lastPairStage.load(),sceneVisibilityRefreshes.load());
-        LOG("CE CLASSIC gen=%u installed=%d pairs=%llu drops=%llu stock=%llu outputs=%llu sourceMiss=%llu failure=%u sourceFailure=%u",
+        LOG("CE CLASSIC gen=%u installed=%d pairs=%llu drops=%llu stock=%llu outputs=%llu sourceMiss=%llu failure=%u sourceFailure=%u mono=%llu monoDrops=%llu passes=%llu",
             gen,classicInstalled.load(),classicPairs.load(),classicDrops.load(),classicStock.load(),
             classicOutputs.load(),classicSourceMiss.load(),static_cast<unsigned>(classicLastFailure.load()),
-            static_cast<unsigned>(classicSourceFailure.load()));
+            static_cast<unsigned>(classicSourceFailure.load()),classicMonoFrames.load(),classicMonoDrops.load(),
+            classicPasses.load());
         LOG("CE CLASSIC PREP stage=%u cache=%d raster=%ux%u output=%ux%u",
             classicPairStage.load(),classicCacheBegan.load(),classicRasterWidth.load(),
             classicRasterHeight.load(),classicOutputWidth.load(),classicOutputHeight.load());
@@ -1202,6 +1359,16 @@ bool HaloCE_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActive,bool allo
             gen,anniversaryHudNaturalInstalled.load(),anniversaryHudDraws.load(),
             anniversaryHudFallbacks.load(),hudFailure,AnniversaryHudFailureName(hudFailure),
             anniversaryHudTargetPreparations.load(),anniversaryHudDepthDetachments.load());
+        if (screenEffectInstalled.load()||screenEffectRuns.load()||screenEffectRefusals.load())
+        {
+            const uint32_t effectFailure=screenEffectFailure.load();
+            LOG("CE Anniversary zoom art gen=%u installed=%d faulted=%d runs=%llu refused=%llu reason=%s kind=%d rect=%d,%d,%d,%d eye=%ux%u",
+                gen,screenEffectInstalled.load(),screenEffectFaulted.load(),screenEffectRuns.load(),screenEffectRefusals.load(),
+                ScreenEffectFailureName(effectFailure),screenEffectRefusedKind.load(),
+                screenEffectRefusedRect[0].load(),screenEffectRefusedRect[1].load(),
+                screenEffectRefusedRect[2].load(),screenEffectRefusedRect[3].load(),
+                screenEffectRefusedEye[0].load(),screenEffectRefusedEye[1].load());
+        }
         FrameDiagnostic diagnostic{};
         if (frameDiagnostic.Read(diagnostic))
         {
@@ -1241,6 +1408,9 @@ bool HaloCE_Poll(uintptr_t base,size_t size,uint32_t gen,bool isActive,bool allo
     return armed.load();
 }
 bool HaloCE_Armed() noexcept { return Current()&&armed.load(std::memory_order_acquire); }
+bool HaloCE_Installed() noexcept { return installed.load(std::memory_order_acquire); }
+std::atomic<bool>* HaloCE_TeardownRequested() noexcept { return &teardownRequested; }
+const std::atomic<uint64_t>* HaloCE_LastFrameMs() noexcept { return &lastCameraMs; }
 void HaloCE_Recenter() noexcept
 {
     referenceRevision.fetch_add(1,std::memory_order_acq_rel);
@@ -1265,6 +1435,7 @@ void HaloCE_PresentResources(ID3D11Device* device,ID3D11DeviceContext* context) 
     if (!device||!context) return;
     copyTarget.store(reinterpret_cast<uintptr_t>((*reinterpret_cast<void***>(context))[46]),std::memory_order_release);
     if (!HaloCE_Armed()) return;
+    AnniversaryHud_PresentResources(device);
     Wanted next{};
     if (!wanted.Read(next)||!next.generation||next.generation!=generation.load()||
         next.context!=reinterpret_cast<uintptr_t>(context)) return;
@@ -1300,6 +1471,10 @@ bool HaloCE_AcquirePair(ID3D11DeviceContext* context,uint64_t currentSerial,uint
     return cache.AcquireCompleted(key,context,pair);
 }
 void HaloCE_ReleasePair(uint64_t borrowId) noexcept { cache.ReleaseCompleted(borrowId); }
+int32_t HaloCE_ObservedRenderer() noexcept
+{ return ceObservedRenderer.load(std::memory_order_acquire); }
+uint64_t HaloCE_TakeMonoDrops() noexcept
+{ return classicMonoDropsUnreported.exchange(0,std::memory_order_acq_rel); }
 bool HaloCE_RenderContextCurrent(const halo_ce::RenderContext& context) noexcept
 {
     Tracking tracking{};
@@ -1517,6 +1692,8 @@ bool HaloCE_BeginAnniversaryHudGameplay(ID3D11DeviceContext* context,UINT& width
 { return AnniversaryHud_BeginGameplay(context,width,height); }
 void HaloCE_EndAnniversaryHudGameplay(bool complete) noexcept
 { AnniversaryHud_EndGameplay(complete); }
+bool HaloCE_RunAnniversaryScreenEffect(ID3D11DeviceContext* context) noexcept
+{ Callback callback; return AnniversaryHud_ScreenEffect(context); }
 void HaloCE_RecordTextureCreated(ID3D11Texture2D* texture,
     const D3D11_TEXTURE2D_DESC& descriptor) noexcept
 {

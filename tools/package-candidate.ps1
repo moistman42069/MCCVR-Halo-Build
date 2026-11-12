@@ -8,7 +8,12 @@ param(
 
     # Retained only to reject obsolete callers explicitly. The new complete
     # ModFiles payload is installed by the bundled verified launcher.
-    [switch]$Install
+    [switch]$Install,
+
+    # Package although HaloMCCVRInject.exe differs from the one Microsoft was
+    # asked to clear (tools/injector-cleared.sha256). Only for an intended
+    # change to the injector; that release needs a new submission.
+    [switch]$AcceptInjectorChange
 )
 
 # Halo MCC VR is one cumulative build: Halo 3 + ODST + Halo: Reach + Halo 4,
@@ -215,14 +220,12 @@ try {
             'Halo2ShouldSuppressClassicFirstPersonParticle' -or
         $halo2LogicSource -notmatch
             'currentUserFirstPerson\s*!=\s*0\s*&&\s*\r?\n\s*Halo2ClassicRenderTreeRuns' -or
-        $menuSource -notmatch 'H2 Classic gun yaw \(deg\)' -or
-        $menuSource -notmatch 'H2 Classic gun pitch \(deg\)' -or
         $configHeaderSource -notmatch
             'bool fit_desktop_window\s*=\s*true' -or
         $configHeaderSource -notmatch 'float hud_size\s*=\s*0\.43f' -or
         $configHeaderSource -notmatch 'bool show_welcome\s*=\s*true' -or
         $vrSource -notmatch 'Halo 2 Stage 3AM performance gate') {
-        throw 'C-H2-88 gate failed: Classic muzzle isolation, the two alignment controls, V5 defaults, welcome, or bounded Stage 3AM diagnostics are missing.'
+        throw 'C-H2-88 gate failed: Classic muzzle isolation, V5 defaults, welcome, or bounded Stage 3AM diagnostics are missing.'
     }
     $halo4RestoreLogicSource = [IO.File]::ReadAllText(
         (Join-Path $repoRoot 'src\common\halo4_restoration_logic.h'))
@@ -263,7 +266,7 @@ try {
         $d3dSource -notmatch 'D3D_Halo4HelmetShaderPathAvailable' -or
         $halo4RestoreAsmSource -notmatch 'Halo4EffectTransientWrapper' -or
         $halo4RestoreAsmSource -notmatch 'Halo4CurvatureBridge' -or
-        $configHeaderSource -notmatch 'bool halo4_helmet\s*=\s*true' -or
+        $configHeaderSource -notmatch 'bool halo4_helmet\s*=\s*false' -or
         $menuSource -notmatch 'Show Halo 4 helmet frame') {
         throw 'C-H4-56 gate failed: the full-frontend visor geometry admission, native-reticle replay canvas, exact visor-shader toggle, pause, effects, or adjustable HUD source is missing.'
     }
@@ -310,15 +313,24 @@ try {
             'scoped aim-assist view helper accepts the normalized') {
         throw 'C-H2-92 gate failed: the rejected debug global is not dormant or controller-scoped native target selection, accepted camera suppression, fail-open isolation, telemetry, or unit coverage is missing.'
     }
-    if ($configHeaderSource -notmatch
-            'halo2_classic_gun_pitch_deg\s*=\s*-9\.5f' -or
-        $configHeaderSource -notmatch
-            'halo2_classic_gun_yaw_deg\s*=\s*1\.0f' -or
-        $coreTestsSource -notmatch
-            'fresh\.halo2_classic_gun_yaw_deg\s*==\s*1\.0f' -or
-        $coreTestsSource -notmatch
-            'fresh\.halo2_classic_gun_pitch_deg\s*==\s*-9\.5f') {
-        throw 'Halo 2 Classic default-alignment gate failed: yaw +1.0 / pitch -9.5 or unit coverage is missing.'
+    # The old Classic sliders were retired by the weapons-alignment request.
+    # Validate the active fixed correction and independent barrel publication,
+    # not legacy serialized configuration defaults that no longer drive it.
+    $alignmentSource = [IO.File]::ReadAllText(
+        (Join-Path $repoRoot 'src\common\weapon_alignment.h'))
+    $alignmentTestsSource = [IO.File]::ReadAllText(
+        (Join-Path $repoRoot 'tests\weapon_alignment_tests.cpp'))
+    $cmakeSource = [IO.File]::ReadAllText(
+        (Join-Path $repoRoot 'CMakeLists.txt'))
+    if ($alignmentSource -notmatch 'kH2ClassicVisualPitch\s*=\s*-9\.5f' -or
+        $halo2ObserverSource -notmatch 'classicConsumer\?weapon_alignment::kH2ClassicVisualPitch\+' -or
+        $halo2ObserverSource -notmatch 'Halo2RemoveVisualFrame' -or
+        $halo2ObserverSource -notmatch 'candidate\.muzzleNeutralCarrier\[0\]=rightCarrier' -or
+        $menuSource -match 'SliderFloat\(\s*"H2 Classic gun (yaw|pitch)' -or
+        $menuSource -notmatch 'Reset visual rotation' -or
+        $alignmentTestsSource -notmatch 'Halo2RemoveVisualFrame' -or
+        $cmakeSource -notmatch 'add_test\(NAME halomccvr_weapon_alignment_tests') {
+        throw 'Weapon alignment gate failed: fixed Classic -9.5 visual pitch, independent barrel frame, retired sliders, or registered tests are missing.'
     }
     $halo2StereoSource = [IO.File]::ReadAllText(
         (Join-Path $repoRoot 'src\dll\halo2_stereo_core.cpp'))
@@ -436,7 +448,14 @@ try {
         throw 'All-title world-contact gate failed: H2 authored weapon bounds, title-native H3/ODST/Reach collision wrappers, Reach ABI isolation, or shared melee admission is missing.'
     }
 
-    Invoke-Tool { & cmake --preset $packagePreset }
+    # Which release page this package belongs to: the launcher's update source starts here. It follows the repository
+    # the package is built from, so each fork's own builds update from that fork.
+    $originUrl = (& git -C $repoRoot remote get-url origin 2>$null | Out-String).Trim()
+    $releaseChannel = if ($originUrl -match '[/:]MOTYSHIZ/') { 'nitsujack' }
+        elseif ($originUrl -match '[/:]Godoy301/') { 'godoy' }
+        else { 'official' }
+
+    Invoke-Tool { & cmake --preset $packagePreset "-DHALOMCCVR_RELEASE_CHANNEL=$releaseChannel" }
     if ($LASTEXITCODE -ne 0) {
         throw "CMake configure failed for preset $packagePreset."
     }
@@ -465,6 +484,11 @@ try {
     }
     if ($cache -notmatch '(?m)^BUILD_TESTING:BOOL=ON\r?$') {
         throw 'Refusing to package: BUILD_TESTING is not ON.'
+    }
+    # Development diagnostics and automated-test hooks must never ship (a config flag is not a guard).
+    # The persistent incremental cache would otherwise carry a -D...=ON silently into a package.
+    if ($cache -notmatch '(?m)^HALOMCCVR_DEV_DIAGNOSTICS:BOOL=OFF\r?$') {
+        throw 'Refusing to package: HALOMCCVR_DEV_DIAGNOSTICS is not OFF (dev tooling / test hooks compiled in).'
     }
     $pythonMatch = [regex]::Match($cache,
         '(?m)^HALOMCCVR_PACKAGE_PYTHON:FILEPATH=(?<path>.+)\r?$')
@@ -501,6 +525,35 @@ try {
         throw 'Reach consistency check failed.'
     }
 
+    # HaloMCCVRInject.exe is meant to stay byte-identical from release to
+    # release, so that Microsoft's clearance of it as a false positive keeps
+    # applying. A different file is never packaged by accident.
+    $injectorPinPath = Join-Path $repoRoot 'tools\injector-cleared.sha256'
+    $injectorPin = @(Get-Content -LiteralPath $injectorPinPath |
+        Where-Object { $_ -match '^[0-9A-Fa-f]{64}\s' })
+    if ($injectorPin.Count -ne 1) {
+        throw "Could not read the cleared injector's SHA-256 from $injectorPinPath."
+    }
+    $injectorCleared = $injectorPin[0].Substring(0, 64).ToUpperInvariant()
+    $injectorBuilt = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $repoRoot `
+        "$packageBuildDir\Release\HaloMCCVRInject.exe")).Hash
+    if ($injectorBuilt -ne $injectorCleared) {
+        $injectorNotice = "HaloMCCVRInject.exe HAS CHANGED. Built $injectorBuilt; " +
+            "Microsoft was asked to clear $injectorCleared. Windows Defender may flag " +
+            'this release until the new file is submitted and cleared.'
+        Write-Host ''
+        Write-Host ('!' * 78) -ForegroundColor Red
+        Write-Host $injectorNotice -ForegroundColor Red
+        Write-Host ('!' * 78) -ForegroundColor Red
+        Write-Host ''
+        if (-not $AcceptInjectorChange) {
+            throw ($injectorNotice + ' If the change is intended, package with ' +
+                '-AcceptInjectorChange, submit the new file to Microsoft, and ' +
+                'record its SHA-256 in tools\injector-cleared.sha256.')
+        }
+        Write-Warning 'Packaging a changed HaloMCCVRInject.exe (-AcceptInjectorChange).'
+    }
+
     $finalCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
     $finalStatus =
         @(& git -C $repoRoot status --porcelain=v1 --untracked-files=normal)
@@ -518,7 +571,6 @@ try {
         throw "Refusing to reuse candidate directory: $packageDir"
     }
     $payloadDir = Join-Path $packageDir 'ModFiles'
-
     Invoke-Tool { & cmake --install $packageBuildDir --config Release `
         --prefix $payloadDir --component dist }
     if ($LASTEXITCODE -ne 0) {
@@ -545,6 +597,9 @@ try {
     $launcherPath = Join-Path $packageDir 'HaloMCCVRLauncher.exe'
     foreach ($requiredPath in @(
             $dllPath,
+            (Join-Path $payloadDir 'HaloMCCVRReclaimerRelay.dll'),
+            (Join-Path $payloadDir 'HaloMCCVRInject.exe'),
+            (Join-Path $payloadDir 'HaloMCCVRSettings.exe'),
             $launcherPath,
             $configPath,
             (Join-Path $payloadDir 'LICENSE'),
@@ -555,6 +610,17 @@ try {
             (Join-Path $payloadDir 'assets/fonts/Oxanium.ttf'))) {
         if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
             throw "Candidate package is missing: $requiredPath"
+        }
+    }
+
+    # Dev tooling must be compiled OUT, not switched off. The cache check above proves the option;
+    # this proves the artifact: no dev-only log tag may appear anywhere in the packaged DLL.
+    $dllText = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($dllPath))
+    foreach ($devTag in @('REACHWP', 'REACHVS', 'REACHDDP', 'REACHAIMPROBE', 'REACHDIRECTDRIVE',
+            'REACHCROUCHCAM', 'DEV BUILD', 'CENSUS collision_test_vector', 'Roomscale trace',
+            'DEV TEST OVERRIDE', 'DEV fault injection', 'REACHSIGHT shot', 'REACHSIGHT engine trace')) {
+        if ($dllText.Contains($devTag)) {
+            throw "Refusing to package: dev-only tag '$devTag' is compiled into HaloMCCVR.dll."
         }
     }
 
@@ -584,7 +650,7 @@ try {
     $manifest = [ordered]@{
         schema_version = 56
         payload_directory = 'ModFiles'
-        status = 'UNTESTED_LOCAL_CANDIDATE'
+        status = 'RELEASE_CANDIDATE'
         accepted = $false
         package_id = $packageId
         created_utc = $createdUtc.ToString('o')
@@ -613,7 +679,7 @@ try {
             path = 'HaloMCCVRLauncher.exe'
             bytes = $launcher.Length
             sha256 = $launcherHash
-            execution_level = 'requireAdministrator'
+            execution_level = 'asInvoker'
             manual_payload_contains_launcher = $false
         }
         accepted_halo4_identity = [ordered]@{
@@ -654,7 +720,7 @@ try {
             effect_cave_restored_on_cleanup = $true
             effect_policy = 'stage3ai-selected-local-first-person-finite-far'
             effect_failure_policy = 'stock-effects-camera-hud-and-openxr-remain-armed'
-            helmet_default_visible = $true
+            helmet_default_visible = $false
             helmet_control = 'halo4_helmet'
             helmet_binding =
                 'exact-3dmigoto-pixel-shader-4BE62AC49C2BF210'
@@ -1186,7 +1252,7 @@ try {
         }
         roomscale_candidate = [ordered]@{
             config_key = 'roomscale_movement'
-            default_enabled = $false
+            default_enabled = $true
             implementation = 'native-walking-with-observed-horizontal-camera-reference-consumption'
             title_coverage = 'H2-Classic-Anniversary-H3-ODST-Reach-H4'
             head_relative_walking = $true
@@ -1394,7 +1460,6 @@ try {
             headset_accepted = $false
         }
         current_notes = 'RELEASE-NOTES.md'
-        implementation_ledger = 'IMPLEMENTATION-STATUS.md'
         experimental_avatar = [ordered]@{
             enabled_by_default = $false
             runtime_world_rigs = @('Halo 3 Chief/Elite/Arbiter', 'Halo 4 Chief')
@@ -1410,33 +1475,26 @@ try {
             auto_detect_editions = @('Steam', 'Microsoft Store')
             preserve_and_extend_config = $true
             per_file_sha256_manifest = 'ModFiles/INSTALL-MANIFEST.sha256'
-            update_repository = 'moistman42069/MCCVR-Halo-Build'
+            update_repository = 'chosen in the launcher; starts on release_channel in BUILD-IDENTITY.txt'
             update_policy = 'explicit-latest-public-release-with-asset-digest-and-safe-extraction'
         }
         historical_metadata_notice = 'Older stage/profile IDs and feature results below describe inherited work and retain their original coverage limits. Current accepted baseline is Alpha 0.4.2 source 1a9766c. This unaccepted refinement audit candidate does not complete the full standing scope. Current changes and unresolved items are listed in RELEASE-NOTES.md. Earlier standing and deferred scope is preserved.'
         halo4_new_damage_blackout_report = 'deferred-unresolved-distinct-from-earlier-cryptum-shader-suppression'
-        note = 'Unaccepted major QoL candidate above Alpha0.4.2 source1a9766c. Current implementation and unresolved reports are enumerated in RELEASE-NOTES.md and IMPLEMENTATION-STATUS.md. New launcher/install/update payload; both editions; no game launch or installation during preparation. Older nested stage metadata is historical, not a claim of current headset acceptance or complete community-backlog resolution.'
+        note = 'Unaccepted major QoL candidate above Alpha0.4.2 source1a9766c. Current implementation and unresolved reports are enumerated in RELEASE-NOTES.md. New launcher/install/update payload; both editions; no game launch or installation during preparation. Older nested stage metadata is historical, not a claim of current headset acceptance or complete community-backlog resolution.'
 
     }
 
     Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-RELEASE-NOTES-2026-09-30.md') -Destination (Join-Path $packageDir 'RELEASE-NOTES.md')
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-IMPLEMENTATION-STATUS-2026-09-30.md') -Destination (Join-Path $packageDir 'IMPLEMENTATION-STATUS.md')
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/QOL-IMPLEMENTATION-STATUS-2026-09-23.md') -Destination (Join-Path $packageDir 'PREVIOUS-IMPLEMENTATION-STATUS.md')
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/LINUX-PROTON-LOGIN-FOCUS-REVIEW-2026-09-30.md') -Destination (Join-Path $packageDir 'LINUX-LOGIN-REVIEW.md')
-    Copy-Item -LiteralPath (Join-Path $repoRoot 'docs/FINGER-JOINT-IDENTITY-2026-09-30.md') -Destination (Join-Path $packageDir 'FINGER-JOINT-IDENTITY.md')
     Copy-Item -LiteralPath (Join-Path $packageDir 'RELEASE-NOTES.md') -Destination $payloadDir
-    Copy-Item -LiteralPath (Join-Path $packageDir 'IMPLEMENTATION-STATUS.md') -Destination $payloadDir
-    Copy-Item -LiteralPath (Join-Path $packageDir 'PREVIOUS-IMPLEMENTATION-STATUS.md') -Destination $payloadDir
-    Copy-Item -LiteralPath (Join-Path $packageDir 'LINUX-LOGIN-REVIEW.md') -Destination $payloadDir
-    Copy-Item -LiteralPath (Join-Path $packageDir 'FINGER-JOINT-IDENTITY.md') -Destination $payloadDir
-    foreach ($packageDoc in @('RELEASE-NOTES.md', 'IMPLEMENTATION-STATUS.md', 'PREVIOUS-IMPLEMENTATION-STATUS.md', 'LINUX-LOGIN-REVIEW.md', 'FINGER-JOINT-IDENTITY.md')) {
+    foreach ($packageDoc in @('RELEASE-NOTES.md')) {
         if (-not (Test-Path -LiteralPath (Join-Path $payloadDir $packageDoc) -PathType Leaf)) {
             throw "Candidate package is missing its report ledger: $packageDoc"
         }
     }
     Copy-Item -LiteralPath (Join-Path $payloadDir 'MANUAL-README.txt') -Destination (Join-Path $packageDir 'README.txt')
     [IO.File]::WriteAllLines((Join-Path $payloadDir 'BUILD-IDENTITY.txt'),
-        @("source_commit=$commit", 'build_kind=UNTESTED_LOCAL_CANDIDATE', 'release_tag='),
+        @("source_commit=$commit", 'build_kind=RELEASE_CANDIDATE', "release_tag=RC-$($commit.Substring(0, 7))",
+            "release_channel=$releaseChannel", "built=$((& git -C $repoRoot show -s --format=%cs $commit).Trim())"),
         [Text.UTF8Encoding]::new($false))
     # Hash the complete manual/install payload, including config, runtime,
     # fonts, licenses and identity. The manifest itself is deliberately excluded.
@@ -1476,19 +1534,32 @@ try {
 
     $buildZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Build.zip")
     $manualZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Manual-ModFiles.zip")
+    $standaloneZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Standalone.zip")
     $sourceZip = Join-Path $candidateRoot ("HaloMCCVR-$packageId-Source.zip")
     Compress-Archive -Path (Join-Path $packageDir '*') -DestinationPath $buildZip
     New-ManualPayloadArchive $payloadDir $manualZip
+    # The launcher on its own, for pages that hand it out instead of the full package: it downloads the mod itself.
+    # Its name must not end in -Launcher.zip: launchers take a release's one such file as the update, and refuse a
+    # release with two.
+    $standaloneDir = Join-Path $candidateRoot ("$packageId.standalone")
+    New-Item -ItemType Directory -Path $standaloneDir | Out-Null
+    Copy-Item -LiteralPath (Join-Path $packageDir 'HaloMCCVRLauncher.exe') -Destination $standaloneDir
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'installer/STANDALONE-README.txt') -Destination (Join-Path $standaloneDir 'README.txt')
+    Copy-Item -LiteralPath (Join-Path $payloadDir 'LICENSE') -Destination $standaloneDir
+    Copy-Item -LiteralPath (Join-Path $payloadDir 'THIRD-PARTY-LICENSES.txt') -Destination $standaloneDir
+    Copy-Item -LiteralPath (Join-Path $payloadDir 'assets/fonts/OFL-Oxanium.txt') -Destination $standaloneDir
+    Compress-Archive -Path (Join-Path $standaloneDir '*') -DestinationPath $standaloneZip
+    Remove-Item -LiteralPath $standaloneDir -Recurse -Force
     # Archive committed bytes, independent of this machine's Windows checkout
     # line-ending preference. This permits exact source/blob verification.
     Invoke-Tool { & git -c core.autocrlf=false -C $repoRoot archive --format=zip --prefix=Halo-MCC-VR/ `
         "--output=$sourceZip" $commit }
     if ($LASTEXITCODE -ne 0) { throw 'Matching source archive failed.' }
     Invoke-Tool { & $pythonPath (Join-Path $repoRoot 'tools/verify-qol-package.py') `
-        $buildZip $sourceZip --manual-zip $manualZip --commit $commit }
+        $buildZip $sourceZip --manual-zip $manualZip --standalone-zip $standaloneZip --commit $commit }
     if ($LASTEXITCODE -ne 0) { throw 'Build, manual payload and source ZIP verification failed.' }
     $hashLines = @("Source commit: $commit")
-    foreach ($archive in @($buildZip, $manualZip, $sourceZip)) {
+    foreach ($archive in @($buildZip, $manualZip, $standaloneZip, $sourceZip)) {
         $hashLines += (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash +
             '  ' + [IO.Path]::GetFileName($archive)
     }
@@ -1496,6 +1567,7 @@ try {
         $hashLines, [Text.UTF8Encoding]::new($false))
     Write-Host "Build ZIP:  $buildZip"
     Write-Host "Manual ZIP: $manualZip"
+    Write-Host "Standalone launcher ZIP: $standaloneZip"
     Write-Host "Source ZIP: $sourceZip"
 
     Write-Host "Created untested candidate: $packageDir"

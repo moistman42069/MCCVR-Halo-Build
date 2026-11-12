@@ -15,18 +15,19 @@ std::atomic<bool> g_armed{}, g_teardown{}, g_installed{}, g_referenceValid{},
     g_recenterRequested{}, g_levelLive{}, g_remasteredLive{};
 std::atomic<uint32_t> g_activeCallbacks{}, g_generation{}, g_vrFailureGeneration{};
 std::atomic<uint32_t> g_zoomFaultGeneration{},g_zoomFaults{};
-std::atomic<uintptr_t> g_originalScene{}, g_originalRebuild{}, g_originalHostUi{},
+std::atomic<uintptr_t> g_originalScene{}, g_originalRebuild{}, g_originalHostUi{}, g_originalViewTargets{},
     g_fpPatchRecord{}, g_rebuildMatrices{}, g_cameraCommit{}, g_cameraRefreshRect{},
     g_moduleBase{}, g_observerResult{};
 std::atomic<uint64_t> g_lastCompletedSerial{};
 HMODULE g_moduleReference{};
 void* g_sceneTarget{};
 void* g_rebuildTarget{};
-void* g_hostUiTarget{};
+void* g_hostUiTarget{};
+void* g_viewTargetsTarget{};
 uint32_t g_rejectedGeneration{}, g_manualRecoveryGeneration{}, g_armedLoggedGeneration{};
 GameTitle activeTitle = GameTitle::Halo2;
 struct HookState { bool exists = true; bool enabled = true; };
-std::array<HookState, 3> hooks{};
+std::array<HookState, 4> hooks{};
 unsigned checks{}, failures{}, sleepCalls{}, disableCalls{}, removeCalls{},
     quiescenceCalls{}, installCalls{}, installedOverPending{}, removedBeforeQuiescence{};
 int failedDisable = -1, failedRemove = -1;
@@ -46,7 +47,8 @@ void Check(bool pass, const char* message)
 void FixtureSleep(DWORD) { ++sleepCalls; }
 void SaberSceneDetour() {}
 void RebuildDetour() {}
-void HostUiDetour() {}
+void HostUiDetour() {}
+void ViewTargetsDetour() {}
 MH_STATUS MCCVR_DisableHookForRetirement(void* target)
 {
     ++disableCalls;
@@ -75,12 +77,13 @@ bool WaitForNativeDetourQuiescence(const void* const* functions,
     const void* const* originals, size_t count, const std::atomic<uint32_t>& callbacks)
 {
     ++quiescenceCalls;
-    Check(count == 3 && functions[0] == reinterpret_cast<const void*>(&SaberSceneDetour) &&
+    Check(count == 4 && functions[0] == reinterpret_cast<const void*>(&SaberSceneDetour) &&
         functions[1] == reinterpret_cast<const void*>(&RebuildDetour) &&
-        functions[2] == reinterpret_cast<const void*>(&HostUiDetour),
-        "production quiescence checks all three detour entries");
-    const void* targets[] = {g_sceneTarget, g_rebuildTarget, g_hostUiTarget};
-    for (size_t i = 0; i < 3; ++i)
+        functions[2] == reinterpret_cast<const void*>(&HostUiDetour) &&
+        functions[3] == reinterpret_cast<const void*>(&ViewTargetsDetour),
+        "production quiescence checks all four detour entries");
+    const void* targets[] = {g_sceneTarget, g_rebuildTarget, g_hostUiTarget, g_viewTargetsTarget};
+    for (size_t i = 0; i < 4; ++i)
     {
         Check(!targets[i] || !hooks[i].exists || !hooks[i].enabled,
               "entries are disabled before quiescence");
@@ -92,6 +95,7 @@ bool WaitForNativeDetourQuiescence(const void* const* functions,
 }
 GameTitle TitleAdapter_GetActiveTitle() { return activeTitle; }
 void Report() {}
+void ReportPropagatedGameFaults(uintptr_t, size_t) {}
 
 #define Sleep FixtureSleep
 #define MH_DisableHook FixtureDisableHook
@@ -108,8 +112,9 @@ bool InstallCore(uintptr_t base, uint32_t generation, uintptr_t observer)
     for (const auto& hook : hooks)
         if (hook.exists) { ++installedOverPending; return false; }
     for (auto& hook : hooks) hook = {true, true};
-    g_sceneTarget = Target(0); g_rebuildTarget = Target(1); g_hostUiTarget = Target(2);
+    g_sceneTarget = Target(0); g_rebuildTarget = Target(1); g_hostUiTarget = Target(2); g_viewTargetsTarget = Target(3);
     g_originalScene = Original(0); g_originalRebuild = Original(1); g_originalHostUi = Original(2);
+    g_originalViewTargets = Original(3);
     g_coreState = CoreState::Installed; g_installed = true; g_teardown = false;
     g_moduleBase = base; g_generation = generation; g_observerResult = observer;
     return true;
@@ -126,8 +131,9 @@ bool InstallCore(uintptr_t base, uint32_t generation, uintptr_t observer)
 void Reset()
 {
     for (auto& hook : hooks) hook = {true, true};
-    g_sceneTarget = Target(0); g_rebuildTarget = Target(1); g_hostUiTarget = Target(2);
+    g_sceneTarget = Target(0); g_rebuildTarget = Target(1); g_hostUiTarget = Target(2); g_viewTargetsTarget = Target(3);
     g_originalScene = Original(0); g_originalRebuild = Original(1); g_originalHostUi = Original(2);
+    g_originalViewTargets = Original(3);
     g_moduleBase = 0x10000000; g_generation = 7; g_observerResult = 0x3000;
     g_moduleReference = reinterpret_cast<HMODULE>(0x10000000);
     g_coreState = CoreState::Installed; g_installed = true; g_armed = true; g_teardown = false;
@@ -149,7 +155,7 @@ void CheckRetained(const char* description)
     Check(!g_armed.load() && g_teardown.load() && g_installed.load() &&
         g_generation.load() == 7 && g_moduleBase.load() == 0x10000000 &&
         g_originalScene.load() == Original(0) && g_originalRebuild.load() == Original(1) &&
-        g_originalHostUi.load() == Original(2), description);
+        g_originalHostUi.load() == Original(2) && g_originalViewTargets.load() == Original(3), description);
 }
 }
 
@@ -161,13 +167,14 @@ int main()
     Check(sleepCalls == 200 && removeCalls == 0, "timeout never removes live callback trampolines");
     CheckRetained("timeout retains exact hook originals/module/generation and closes arming");
     Check(g_coreState == CoreState::CleanupRequired, "timeout explicitly remains cleanup required");
-    Check(!hooks[0].enabled && !hooks[1].enabled && !hooks[2].enabled,
+    Check(!hooks[0].enabled && !hooks[1].enabled && !hooks[2].enabled && !hooks[3].enabled,
           "initial timeout leaves all entries safely disabled");
     g_activeCallbacks = 0;
     Check(RemoveCore("callback timeout retry"),
           "second removal succeeds when upstream reports already disabled");
-    Check(removeCalls == 3 && !g_installed.load() && !g_generation.load() &&
-          !g_originalScene.load() && !g_sceneTarget && !g_rebuildTarget && !g_hostUiTarget,
+    Check(removeCalls == 4 && !g_installed.load() && !g_generation.load() &&
+          !g_originalScene.load() && !g_sceneTarget && !g_rebuildTarget && !g_hostUiTarget &&
+          !g_viewTargetsTarget && !g_originalViewTargets.load(),
           "quiescent retry removes records and clears originals exactly once");
 
     Reset(); quiescent = false;
@@ -178,7 +185,7 @@ int main()
     Check(RemoveCore("detour prologue retry"), "detour quiescence retry completes retirement");
     Check(!removedBeforeQuiescence, "no removal precedes callback and detour quiescence");
 
-    for (int index = 0; index < 3; ++index)
+    for (int index = 0; index < 4; ++index)
     {
         Reset(); failedDisable = index;
         Check(!RemoveCore("disable failure"), "unsafe disable status blocks cleanup");
@@ -188,14 +195,14 @@ int main()
         Check(RemoveCore("disable retry"), "partial disable retries already disabled earlier entries");
     }
 
-    for (int index = 0; index < 3; ++index)
+    for (int index = 0; index < 4; ++index)
     {
         Reset(); failedRemove = index;
         Check(!RemoveCore("remove failure"), "failed hook removal remains pending");
         Check(g_coreState == CoreState::CleanupRequired && g_installed.load(),
               "remove failure cannot publish stock-clean completion");
-        const void* targets[] = {g_sceneTarget, g_rebuildTarget, g_hostUiTarget};
-        for (int i = 0; i < 3; ++i)
+        const void* targets[] = {g_sceneTarget, g_rebuildTarget, g_hostUiTarget, g_viewTargetsTarget};
+        for (int i = 0; i < 4; ++i)
             Check((targets[i] != nullptr) == (i >= index),
                   "partial removal preserves precisely the remaining target records");
         Check(!Poll() && installCalls == 0 && !g_armed.load(),

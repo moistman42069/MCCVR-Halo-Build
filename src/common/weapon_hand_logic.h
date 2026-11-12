@@ -49,6 +49,45 @@ struct SupportGripAdmission
     void Arm() noexcept { requiresRelease = true; }
 };
 
+// Two-handed aim is a first-person feature. In a vehicle seat or walk-up turret
+// (every title) the aim belongs to the primary controller - the configured aim
+// hand - alone: players board expecting that hand to steer the seat.
+// vr.cpp feeds this gate fp_view::Gate's verdict (any view that is
+// not the player's own first person: first_person_view_logic.h), so "seated"
+// below reads "out of first person".
+//
+// The seat is one more admission blocker beside dual wield and a role change,
+// so it shares SupportGripAdmission's release-before-reacquire: an engaged
+// hold drops on the first seated update, and a Grip still held when the player
+// leaves the seat (a wheel grip, say) cannot re-engage until it is released
+// and squeezed again - no surprise snap toward the support hand on exit.
+//
+// The drop must also skip the 200 ms release blend, or the aim would ease
+// away from the support hand after boarding. `dropPresentationHistory` says
+// when: on the seat's entry edge, and whenever a hold actually drops while
+// seated (a pose outage defers the drop until tracking returns).
+struct SeatedSupportGate
+{
+    bool seated = false;
+    struct Step
+    {
+        bool blocksSupport = false;
+        bool enteredSeat = false;
+    };
+    Step Observe(bool seatedNow) noexcept
+    {
+        const Step step{seatedNow, seatedNow && !seated};
+        seated = seatedNow;
+        return step;
+    }
+    static constexpr bool DropPresentationHistory(const Step& step,
+        bool latchedBefore, bool latchedAfter) noexcept
+    {
+        return step.enteredSeat ||
+            (step.blocksSupport && latchedBefore && !latchedAfter);
+    }
+};
+
 // Full engine handles only. Inventory slots are engine roles: primary=0,
 // secondary=1. The physical controller for each role is a user preference.
 constexpr int ResolveEquippedWeaponSlot(uint32_t weapon, uint32_t primary,

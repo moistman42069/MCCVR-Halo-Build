@@ -414,6 +414,26 @@ inline constexpr bool Halo2StructuralFailureRequiresQuarantine(
         transactionShapeFailed;
 }
 
+// MONO RENDERING (mono_view_logic.h): a Halo 2 frame is complete with every eye pass it asked for and no other. A
+// pair is two passes that completed both eyes; a mono frame is ONE pass, drawn as the eye drawn first, which
+// completed that eye alone.
+inline constexpr uint32_t Halo2ExpectedEyePasses(bool mono) noexcept
+{
+    return mono ? 1u : 2u;
+}
+inline constexpr uint8_t Halo2ExpectedEyeMask(bool mono, int firstEye) noexcept
+{
+    return mono ? static_cast<uint8_t>(firstEye == 1 ? 2u : 1u) : static_cast<uint8_t>(3u);
+}
+inline constexpr bool Halo2EyePassesComplete(
+    bool mono, int firstEye, uint32_t renderViewCalls,
+    uint32_t renderViewReturns, uint8_t completedEyeMask) noexcept
+{
+    return renderViewCalls == Halo2ExpectedEyePasses(mono) &&
+        renderViewReturns == renderViewCalls &&
+        completedEyeMask == Halo2ExpectedEyeMask(mono, firstEye);
+}
+
 // The engine stores one heap-allocated 0x2C-byte game_time_globals object
 // behind this module pointer slot. The official H2EK establishes the layout;
 // retail's unique incrementer and level initializer independently decode the
@@ -1741,15 +1761,96 @@ struct Halo2ObserverPosePublication
     uint32_t vehicleUnit=UINT32_MAX,vehicleParent=UINT32_MAX;
     int16_t vehicleSeat=-1;
     Halo2CameraBasis vehicleReference{};
+    // The vehicle cameras moved the seat view's eye off the stock camera (a firstperson camera's offset, a chase
+    // camera's place): vehicleReference's position is then not the stock camera's (halo2_vehicle_cameras.inl).
+    bool vehicleEyeMoved=false;
+    // On foot under direct drive the stock camera follows the HAND (the drive writes player control's
+    // desired angles), so the view and the controller take the mod's own heading instead
+    // (halo2_foot_view.h): the stock camera's position at that heading, level.
+    bool footReferenceValid=false;
+    Halo2CameraBasis footReference{};
+    // How far stock and footReference sit ABOVE the engine's own eye, straight up (world units): the physical
+    // crouch give-back plus the leash below the character's eye. The view and the hands are built on them
+    // and want it; the engine eye -- where Halo 2 fires from, the sight trace's origin -- is stock minus this
+    // (Halo2EngineEyePosition). Do not aim from stock itself: with the give-back left in, a physical crouch
+    // aims every converged shot from up to half a metre above the real eye.
+    float viewLiftZ=0.0f;
+    // FLAT PARITY (sight_layer.h SightCameraSample): when this publication was written (the sight clock, us; 0 =
+    // unknown) and the engine eye's velocity (world units/s) over ~100 ms of publications, measured on the publishing
+    // (observer) thread. A muzzle shot moves the point it built from this publication with the eye to the fire.
+    uint64_t publishedUs=0;
+    bool engineEyeVelValid=false;
+    float engineEyeVel[3]{};
+    // The simulation tick (game_time +0x08) and MCC's frame-interpolator factor (0x164B300) when this publication was
+    // written. The observer's camera is lerp(previous tick, newest tick, factor) -- the unit camera reads
+    // back the interpolator outside a tick (0x927170 -> 0x7227A0) -- so its engine eye is (1 - factor) of a tick behind
+    // the newest tick's. -1 / NaN when unreadable.
+    int64_t gameTick=-1;
+    float interpFactor=NAN;
     float referenceOrientation[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float referencePosition[3]{};
     Halo2ObserverPoseSnapshot snapshot{};
 };
 
+// The engine's own eye in a publication: the stock camera without the view's lift.
+inline void Halo2EngineEyePosition(const Halo2ObserverPosePublication& publication, float eye[3]) noexcept
+{
+    eye[0] = publication.stock.position[0];
+    eye[1] = publication.stock.position[1];
+    eye[2] = publication.stock.position[2] -
+        (std::isfinite(publication.viewLiftZ) ? publication.viewLiftZ : 0.0f);
+}
+
 inline const Halo2CameraBasis& Halo2ControllerReference(
     const Halo2ObserverPosePublication& publication) noexcept
 {
-    return publication.vehicleReferenceValid ? publication.vehicleReference : publication.stock;
+    return publication.vehicleReferenceValid ? publication.vehicleReference
+        : publication.footReferenceValid ? publication.footReference : publication.stock;
+}
+
+// A frame the observer did not publish is composed onto the camera in hand. When the camera in hand is the
+// player's own -- within ~10 deg of the newest publication's stock camera -- it takes the view's lift above
+// the engine eye from that publication (the physical crouch give-back and the leash: the camera in hand has
+// the character's crouch in it and the head offset the player's, so without the lift a crouch drops the view
+// twice on such frames), and the view's own heading wherever the view has one: in a seat, the seat's
+// (the vehicle reference), and on foot under direct drive, where that camera follows the HAND (the drive
+// writes player control from it). A seat's heading is taken even without the drive: the stock camera there is
+// the native look, which the stick servo turns. Its position is otherwise this frame's. Any other camera (a
+// director's, a scope's), or a publication of another generation, is left as it is.
+inline Halo2CameraBasis Halo2SelfTrackBase(
+    bool published, const Halo2ObserverPosePublication& publication,
+    uint32_t generation, const Halo2CameraBasis& stock) noexcept
+{
+    Halo2CameraBasis base = stock;
+    if (!published || !generation || publication.generation != generation)
+        return base;
+    const float dot = stock.forward[0] * publication.stock.forward[0] +
+        stock.forward[1] * publication.stock.forward[1] +
+        stock.forward[2] * publication.stock.forward[2];
+    if (!std::isfinite(dot) || dot < 0.9848f)
+        return base;
+    if (std::isfinite(publication.viewLiftZ) && publication.viewLiftZ > 0.0f && publication.viewLiftZ <= 1.5f)
+        base.position[2] += publication.viewLiftZ;
+    // A seat's eye the vehicle cameras moved (a chase camera stands metres from the game's own camera) keeps where
+    // the publication put it from the camera in hand.
+    if (publication.vehicleReferenceValid && publication.vehicleEyeMoved &&
+        Halo2ValidateCameraBasis(publication.vehicleReference))
+        for (int axis = 0; axis < 3; ++axis)
+            base.position[axis] += publication.vehicleReference.position[axis] - publication.stock.position[axis];
+    const Halo2CameraBasis* heading =
+        publication.vehicleReferenceValid && Halo2ValidateCameraBasis(publication.vehicleReference)
+            ? &publication.vehicleReference
+            : publication.footReferenceValid && Halo2ValidateCameraBasis(publication.footReference)
+                ? &publication.footReference
+                : nullptr;
+    if (!heading)
+        return base;
+    for (int axis = 0; axis < 3; ++axis)
+    {
+        base.forward[axis] = heading->forward[axis];
+        base.up[axis] = heading->up[axis];
+    }
+    return base;
 }
 
 inline bool Halo2ObserverControllerSnapshotUsable(
@@ -2571,6 +2672,39 @@ inline bool Halo2BuildSaberViewMatrix(
     return true;
 }
 
+// The inverse of Halo2BuildSaberViewMatrix (for the dev flat probe): the Blam camera a Saber view matrix was built
+// from, so a probe reading the view record the Anniversary scene render latched (record+0x20) can measure in Blam
+// world units. blam(s) = (s.x, -s.z, s.y) undoes saber(v) = (v.x, v.z, -v.y); the position takes the engine's offsets
+// and its forward push back out of row 3 and converts metres to world units.
+inline bool Halo2SaberViewMatrixToCamera(
+    const float m[16], const Halo2SaberCameraConstants& constants,
+    Halo2CameraBasis& out) noexcept
+{
+    if (!m || !Halo2SaberCameraConstantsFinite(constants))
+        return false;
+    for (int index = 0; index < 16; ++index)
+        if (!std::isfinite(m[index]))
+            return false;
+    Halo2CameraBasis candidate{};
+    candidate.forward[0] = m[8];
+    candidate.forward[1] = -m[10];
+    candidate.forward[2] = m[9];
+    candidate.up[0] = m[4];
+    candidate.up[1] = -m[6];
+    candidate.up[2] = m[5];
+    const float scale = constants.forwardScale;
+    candidate.position[0] =
+        (m[12] - constants.offsetX - scale * m[8]) / kHalo2MetersPerWorldUnit;
+    candidate.position[2] =
+        (m[13] - constants.offsetZ - scale * m[9]) / kHalo2MetersPerWorldUnit;
+    candidate.position[1] =
+        (constants.offsetY + scale * m[10] - m[14]) / kHalo2MetersPerWorldUnit;
+    if (!Halo2ValidateCameraBasis(candidate))
+        return false;
+    out = candidate;
+    return true;
+}
+
 // 0xBC560(cam, V) stores the VERTICAL field of view and derives the
 // HORIZONTAL one as 2*atan(tan(V/2) / aspect), where the Saber aspect is
 // HEIGHT / WIDTH (0.75 for 640x480). This mirrors that derivation exactly;
@@ -2967,6 +3101,60 @@ inline constexpr uint32_t kHalo2SaberCameraCommitRvaAlias =
 // The scene render consumes a once-per-frame latch and clears it to -1, so a
 // second pass in the same frame must restore it or silently skip work.
 inline constexpr uint32_t kHalo2SaberSceneOnceLatchRva = 0x00E21D30;
+
+// The scene render's per-view target slots: 12 records of 0x4E0 bytes (3 x 2 x 2, built by 0x4715D0), each with a
+// pointer at +0x4A8 that the scene render reads without a null check (0x4719B0 -> 0x1073B0, faulting at 0x107449).
+// The game empties them as it goes to a loading screen; an eye pass started after that faults in game code.
+inline constexpr uint32_t kHalo2SaberViewSlotsRva = 0x01DFF3B0;
+inline constexpr uint32_t kHalo2SaberViewSlotStride = 0x4E0;
+inline constexpr uint32_t kHalo2SaberViewSlotCount = 12;
+inline constexpr uint32_t kHalo2SaberViewSlotPointerOffset = 0x4A8;
+// An eye pass may run while every slot seen filled since the level went live is still filled (bit i = slot i).
+constexpr bool Halo2SaberViewSlotsIntact(uint32_t seenFilled, uint32_t filledNow) noexcept
+{
+    return (seenFilled & ~filledNow) == 0;
+}
+// The slot reader itself: 0x4719B0(rcx, list, r8, r9, group, half) draws each view of `list` (count +0x10, 16-byte
+// entries at +8, each naming its slot offset at +8) into slot offset + half*2 + group*4, reading that slot's pointer
+// (0x471E59) and handing it, unchecked, to 0x1073B0. A slot emptied after the scene pass began, so after any check
+// made before it, faults there (Outskirts' mid-level load on build 9cca71f0, with every slot read filled just before
+// the pass). Its four callers ignore the return value. The bytes pin the entry and the index arithmetic.
+inline constexpr uint32_t kHalo2SaberViewTargetsDrawRva = 0x004719B0;
+inline constexpr uint8_t kHalo2SaberViewTargetsDrawEntryBytes[] = {
+    0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57};
+// 0x471E20: movzx eax, byte [rbp+0x1B8] (half); lea rdx, [rip-...] (image base); lea rcx, [rax+rdi*2]; add rcx, rcx.
+inline constexpr uint32_t kHalo2SaberViewTargetsIndexRva = 0x00471E20;
+inline constexpr uint8_t kHalo2SaberViewTargetsIndexBytes[] = {
+    0x0F, 0xB6, 0x85, 0xB8, 0x01, 0x00, 0x00, 0x48, 0x8D, 0x15, 0xD2, 0xE1, 0xB8, 0xFF, 0x48, 0x8D, 0x0C, 0x78,
+    0x48, 0x03, 0xC9};
+// 0x471E40: the per-view read: entries [r15+8], slot offset [entry+8], slot index * 0x4E0, pointer at +0x1DFF858.
+inline constexpr uint32_t kHalo2SaberViewTargetsReadRva = 0x00471E40;
+inline constexpr uint8_t kHalo2SaberViewTargetsReadBytes[] = {
+    0x49, 0x8B, 0x7F, 0x08, 0x41, 0x8B, 0x44, 0x3E, 0x08, 0x48, 0x03, 0xC1, 0x48, 0x8B, 0xCE, 0x48, 0x69, 0xD8,
+    0xE0, 0x04, 0x00, 0x00, 0x48, 0x8B, 0x06, 0x48, 0x8B, 0x94, 0x13, 0x58, 0xF8, 0xDF, 0x01};
+inline constexpr uint32_t kHalo2SaberViewListEntriesOffset = 0x08;
+inline constexpr uint32_t kHalo2SaberViewListCountOffset = 0x10;
+inline constexpr uint32_t kHalo2SaberViewListEntryStride = 0x10;
+inline constexpr uint32_t kHalo2SaberViewListEntrySlotOffset = 0x08;
+// The slot the draw reads for a view whose entry names `slotOffset`, as the game computes it (64-bit, the group sign
+// extended); kHalo2SaberViewSlotCount or more when the arguments name no slot of the table.
+constexpr uint64_t Halo2SaberViewTargetSlot(uint32_t slotOffset, int32_t group, uint8_t half) noexcept
+{
+    const int64_t index = static_cast<int64_t>(slotOffset) +
+        (static_cast<int64_t>(half) + static_cast<int64_t>(group) * 2) * 2;
+    return index < 0 ? UINT64_MAX : static_cast<uint64_t>(index);
+}
+// The pointer the draw reads for that view, as an offset from halo2.dll's base, exactly as 0x471E40 computes it:
+// the slot offset zero-extended, the rest sign-extended, times 0x4E0, from the table's pointer field -- wrapping as the
+// game's arithmetic does, so a slot outside the twelve is the address the game would read too (2026-11-11: a guard
+// that let such a view through still faulted at +0x107449 during a load).
+constexpr uint64_t Halo2SaberViewTargetPointerOffset(uint32_t slotOffset, int32_t group, uint8_t half) noexcept
+{
+    const uint64_t index = static_cast<uint64_t>(slotOffset) +
+        static_cast<uint64_t>((static_cast<int64_t>(half) + static_cast<int64_t>(group) * 2) * 2);
+    return static_cast<uint64_t>(kHalo2SaberViewSlotsRva + kHalo2SaberViewSlotPointerOffset) +
+        index * kHalo2SaberViewSlotStride;
+}
 // Its callers zero this span of the render context before every call.
 inline constexpr uint32_t kHalo2SaberSceneContextResetOffset = 0x10;
 inline constexpr uint32_t kHalo2SaberSceneContextResetBytes = 0xC8;

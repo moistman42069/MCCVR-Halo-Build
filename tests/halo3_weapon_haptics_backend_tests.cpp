@@ -10,7 +10,7 @@
 #include <cstdlib>
 
 enum class GameTitle { Halo3 };
-struct TestConfig { bool persistent_support_grip{}; };
+struct TestConfig { bool persistent_support_grip{}, dual_wield_shake_reload{}; };
 TestConfig g_config{};
 struct SupportGripRelationshipSnapshot { bool engaged{}; GameTitle title{}; uint32_t generation{}, unit{}, weapon{}; };
 std::atomic<bool> g_vrAim{true};
@@ -21,6 +21,9 @@ void* tagDataBase = nullptr; void** g_halo3TagDataBase = &tagDataBase;
 void* g_halo3TagInstanceTable = nullptr;
 uint8_t* Halo3LoadedTagDefinition(uint32_t);
 bool Halo3ReadOwnedWeapons(uint32_t, uint32_t[2], bool);
+bool Halo3ReadOwnedDualWeapons(uint32_t unit,uint32_t weapons[2]) {return Halo3ReadOwnedWeapons(unit,weapons,true);}
+bool (__fastcall* g_halo3UnitInVehicle)(int32_t) = nullptr;
+void VR_DualWieldObserveOwner(GameTitle,uint32_t,uint32_t,const uint32_t[2]) noexcept {}
 int ResolveEquippedWeaponSlot(uint32_t, uint32_t, uint32_t, bool, bool);
 uint64_t VR_WeaponHapticToken(GameTitle, uint32_t, bool) noexcept;
 bool VR_PulseWeaponHaptics(GameTitle, uint32_t, bool, bool, float, uint64_t) noexcept;
@@ -32,9 +35,12 @@ int MCCVR_DisableHookForRetirement(void*) { return disableHookFails ? 99 : MH_OK
 int MH_RemoveHook(void*) { return MH_OK; }
 int MH_CreateHook(void*, void*, void**) { return MH_OK; }
 int MH_EnableHook(void*) { return MH_OK; }
+int MCCVR_EnableHook(void*) { return MH_OK; }
 bool WaitForNativeDetourQuiescence(const void* const*,const void* const*,size_t,std::atomic<uint32_t>&){return true;}
 #define LOG(...) ((void)0)
 namespace sig { uintptr_t Find(uintptr_t,size_t,const char*) { return 0; } }
+// The DLL's lifted_engine.h: outside Project Reclaimer 0.10 a game function is called where it is.
+namespace lifted { template <typename Fn> Fn Callable(Fn target) { return target; } }
 
 uint64_t tlsSlots[8]{};
 uint64_t MockReadGs(unsigned long) { return reinterpret_cast<uint64_t>(tlsSlots); }
@@ -46,6 +52,7 @@ uint64_t clockMs = 1000;
 uint64_t MockNow() { return clockMs; }
 #define GetTickCount64 MockNow
 
+#include "../src/dll/halo3_hook_watch_mark.h"
 #include "../src/dll/halo3_weapon_haptics.inl"
 
 #undef __readgsqword

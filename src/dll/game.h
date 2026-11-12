@@ -1,20 +1,83 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 
+#include "../common/converge_policy.h"
+#include "../common/first_person_view_logic.h"
 #include "../common/halo3_vehicle_logic.h"
+#include "../common/roomscale_admission_logic.h"
 #include "../common/runtime_types.h"
 #include "../common/support_grip_logic.h"
 #include "../common/vr_action_mapping.h"
+
+// Native 13-float matrix records (scale, column-major basis, translation).
+// Call only with owner-verified authored wrists and the solved primary target.
+void Game_PublishAuthoredGrip(GameTitle title, uint32_t generation,
+    uint32_t unit, uint32_t weapon, const void* right, const void* left,
+    const void* desired, const float* controllerBasis, float units, bool attached);
+
+// True only for a current, occupied support hand in Halo 3.
+bool Game_BlockHalo3SupportPickup() noexcept;
+// Whether a dual-wielded second gun's shots leave on a line of their own (Halo 2, Halo 3): independent dual aim,
+// or barrel aim through the muzzle lane, with the dual lane's hooks live. Otherwise both guns fire along the game's
+// one aim: a proof failure (Project Reclaimer's Halo 3), a fault, the co-op guard, or both options off.
+bool Game_SecondaryShotsOwnLine(GameTitle title) noexcept;
 
 // Read-only, generation-tagged controller bindings. No game memory is touched
 // on the caller's thread. False means there is no verified current snapshot.
 bool Game_ReadVrActionBindings(vr_mapping::Transports& out, uint64_t nowMs,
     unsigned controller = 0);
 uint32_t Game_VrActionTransport(vr_mapping::Action action, uint64_t nowMs);
+// The seat's rows' own buttons in the active game, from the same snapshot (0 for an action the game has none of).
+bool Game_ReadVrExtraBindings(vr_mapping::ExtraTransports& out, uint64_t nowMs);
 
-// Camera-thread admission, using each title's existing native on-foot evidence.
+// Camera-thread admission (roomscale_admission_logic.h): on foot, in control, first person -- by the game's own
+// camera where the title has it bound (every title; Reach, Halo 4 and Halo 2 since director_camera_logic.h), else
+// by the first-person view-model witness -- behind the roomscale setting and the presentation gates. The verdict
+// names the reading that refused.
+// A TITLE'S CAMERA CORE, for a lane that keeps its own loader reference on the game DLL (the first-person seat
+// view, native_vehicle_first_person.cpp). Every game is meant to start in a fresh image of its DLL: when a game
+// ends MCC lets go of the DLL, it unloads, and MCC loads it again for its menus (host_unload_gate.cpp). A reference
+// that outlives the game makes that load take the old image, and the next game of the same title starts in a
+// module whose own shutdown has already run. So such a lane holds its reference only while `installed` (the
+// core's hooks are in: they need the image mapped until they are out), and registers it with the unload gate
+// with `tearingDown` (the core's own "teardown requested") and `lastFrameMs` (GetTickCount64 of the title's last
+// frame; null: the gate only waits for a teardown the core began itself). False: this title's core does not say,
+// and the lane keeps its reference until another title starts, as before.
+struct GameTitleCoreState
+{
+    bool installed = false;
+    std::atomic<bool>* tearingDown = nullptr;
+    const std::atomic<uint64_t>* lastFrameMs = nullptr;
+};
+bool Game_TitleCoreState(GameTitle title, GameTitleCoreState& out) noexcept;
+roomscale_admission::Verdict Game_RoomscaleCameraVerdict(GameTitle title);
 bool Game_RoomscaleCameraAllowed(GameTitle title);
+// That on-foot, player-controlled, first-person evidence alone (no roomscale setting or presentation gates): the
+// head leash below the character's eye holds the view only while this is true.
+roomscale_admission::Verdict Game_TitleOnFootVerdict(GameTitle title);
+bool Game_TitleOnFootPlayerControlled(GameTitle title);
+// The local player is in a vehicle seat, as last known (a pause, which stops the samples, keeps the answer).
+bool Game_TitleSeated(GameTitle title);
+// Two-handed aim's exit condition: whether the game is showing the local player's own first-person view, as the
+// title's strongest available evidence says (first_person_view_logic.h; the per-title table is at the definition).
+// Any thread (VR's frame thread reads it): atomics and the camera threads' publications only. `why` is FirstPerson
+// only on positive evidence; anything unreadable is Unread. `hold`: the shell, a load or a pause (the published
+// runtime mode or the title's own flag), or not the active title: the caller should neither leave nor re-enter on
+// this sample.
+struct TitleFirstPersonView
+{
+    fp_view::Why why = fp_view::Why::Unread;
+    bool hold = false;
+};
+TitleFirstPersonView Game_TitleFirstPersonView(GameTitle title);
+// The title's camera rung as last published, raw (the dev line that says what each state's camera reads): the
+// director's camera mode and perspective for output user 0 (Halo 3, ODST, Reach, Halo 4: first person is mode 3 /
+// perspective 0; -1 / -1 for Halo 2, whose rung is the director's first-person camera update) and the Monitor
+// answer. False: the title has no camera rung bound. Any thread: atomics and Halo 2's static read only.
+bool Game_FirstPersonCameraSample(GameTitle title, fp_view::Signal& camera, int32_t& mode, int32_t& perspective,
+                                  fp_view::Signal& monitor);
 
 // Monotonic counters written by render/palette hooks and sampled at OpenXR
 // frame boundaries. Hooks only touch relaxed atomics; formatting and file I/O
@@ -56,6 +119,53 @@ bool Game_IsStereoGeometryOnlyBringup();
 bool Game_UsesTitleOwnedHeadTracking();
 bool Game_IsCameraOnlyBringup(); // private ODST camera core; no gameplay features
 bool Game_HasScopeRenderer(); // optional title-local zoom view is available
+// Aim Frame Zoom has the zoom button in the active title (with aim_frame_zoom on, where the title can read the game's
+// zoom level and draw the frame): it reaches the game, and the gun-mounted lens is not offered.
+bool Game_AimFrameZoomOwnsZoom();
+// The game's own zoom level for the local player (-1 not zoomed), in the titles that read it (Halo 3, ODST, Halo 2,
+// Halo CE, and Reach and Halo 4 while their muzzle lanes are in). False: not read lately.
+bool Game_ReadZoomLevel(int& level);
+// AIM FRAME ZOOM for the titles whose eye renderers live outside this file: Halo 2 (halo2_stereo_core.cpp,
+// halo2_anniversary_stereo.cpp) and Halo CE (haloce_stereo_core.cpp). Each notes the player's zoom level from its
+// control record: Halo 2's control-update hook (sim thread), Halo CE's renderer (render thread).
+void Game_NoteZoomLevel(GameTitle title, int16_t level);
+// Render thread, once for each frame such a renderer is about to draw. `centre`: the rendered centre eye's camera
+// position and up; `eyeOffset`: each eye's offset from the head (OpenXR view axes, metres); `nativeX`/`nativeY`: the
+// half-angle tangents of the game's own view (its zoom) in the shape this renderer draws; `aimForward`: where the
+// title knows the aim itself (Halo CE's intent ray), null for the converged aim where it is written, else the intent
+// ray. True: draw the frame instead of the eyes -- one pass (as the first eye) or, in 3D, one per eye -- along
+// `forward`/`up` from `position` at the tangents `tanX` x `tanY`, and show it `widthDeg` wide.
+struct GameAimFramePass
+{
+    float position[2][3]{}, forward[2][3]{}, up[2][3]{};
+    float tanX = 0.0f, tanY = 0.0f, widthDeg = 0.0f;
+    bool stereo = false;
+};
+bool Game_AimFrameForEyes(GameTitle title, const float centre[3], const float centreUp[3], const float eyeOffset[2][3],
+                          float nativeX, float nativeY, const float* aimForward, GameAimFramePass& out);
+// The frame's outcome: drawn or refused. A run of refusals gives the zoom back to the title for the rest of the level
+// (Halo 2's lens; Halo CE's own zoom in the immersive view).
+void Game_AimFrameOutcome(GameTitle title, bool refused);
+// Halo 2 publishes its frames through its own pair calls: the outcome and, before the picture is published, what it is
+// (the engine's own tangents, for the present).
+void Game_Halo2AimFrameDrawn(int eye, float tanX, float tanY, float widthDeg);
+void Game_Halo2AimFrameRefused();
+// Halo CE's unit control hook, after the local player's control is set by the control update: the vehicle camera note
+// is posted into the game's own HUD messages there (halo3_hud_note.inl).
+void Game_HaloCEHudNotePost();
+// Halo 2's control-update hook (halo2_direct_drive.inl), for user 0's update: the same, into Halo 2's.
+void Game_Halo2HudNotePost();
+// While a frame's picture is drawn: the game's own HUD layout and crosshair go into it (d3d11_hook.cpp, the HUD).
+void Game_SetAimFramePass(bool on);
+bool Game_IsAimFramePass();
+// The HUD's scale in the frame's picture (aim_frame::HudScale of the player's frame HUD settings; 1 x 1 the game's own).
+void Game_AimFrameHudScale(float& horizontal, float& vertical);
+// The authored crosshair may be captured now: not while zoomed, nor just after the frame (game.cpp).
+bool Game_AimFrameCrosshairReadyForCapture(GameTitle title);
+// Halo 3's HUD layout as it draws now: the one written (Game_GetAppliedHudSafeFrame), or, before it is written
+// for a customised layout, the title's own (MCC 0.87, Project Reclaimer 0.97) with the player's size. False: the
+// title's own layout.
+bool Game_GetHalo3HudSafeFrameInEffect(float& horizontal, float& vertical, float* size);
 bool Game_IsScopeRendering();
 bool Game_SetScopeRendering(bool active);
 // True only while the exact Reach stereo + mandatory authored-crosshair
@@ -117,11 +227,25 @@ void Game_DetachForVrRuntimeFailure();
 // loaded chud_globals tag data (auto-located from the same verified anchor).
 void Game_LocateHudSafeFrames();  // manual rescan (menu button; normally automatic)
 void Game_GetHudSafeFrameStatus(int& matches, bool& scanning);
+// The safe-frame pair the active title's HUD is drawn with, while the mod's layout is in every slot; false while
+// it is not (the title's own safe frame then scales across and down alike). `size`, when given, receives the HUD
+// size that pair was computed from. Lock-free: the crosshair capture reads it on the thread that draws the HUD.
+bool Game_GetAppliedHudSafeFrame(float& horizontal, float& vertical, float* size = nullptr);
+// Project Reclaimer: what reclaimer_flight_buttons does there right now, for the Vehicles panel.
+const char* Game_ReclaimerFlightStatus();
+// Project Reclaimer runs ODST's levels as Halo 3 maps (Halo 3's engine, ODST's scenario). There the controls are ODST's
+// own, its VR Mappings rows, while everything that speaks to the engine stays Halo 3's.
+bool Game_ReclaimerOdstLevel() noexcept;
+inline GameTitle Game_ControlsTitle(GameTitle active) noexcept
+{
+    return active == GameTitle::Halo3 && Game_ReclaimerOdstLevel() ? GameTitle::Halo3ODST : active;
+}
 
 // Head-tracking controls, driven by hotkeys so we can tune it live in-headset.
 void Game_ToggleHeadTracking(); // F2
 void Game_AutoVrTick();         // per-frame: auto-enter/exit VR on level load/exit
 void Game_Recenter();           // F3; Halo camera + OpenXR screen origin
+void Game_RecenterManual();     // the player's own recenter (L3+R3, F3, F1): Halo 2 seats re-align to the nose
 void Game_FlipYaw();            // F1 menu only (was F4: SteamVR's Alt+F4 kept triggering it)
 void Game_FlipPitch();          // F1 menu only (was F5)
 void Game_TogglePositional();   // F6: leaning / positional tracking on/off
@@ -141,9 +265,92 @@ void Game_ToggleVrAim();        // Insert: right controller steers the weapon ai
 // the right-stick deflection (-1..1) that turns the game's aim toward the
 // right controller ray; false = leave the player's real stick alone.
 bool Game_ComputeAimStick(float& outRx, float& outRy);
+// The free-camera frame (src/common/aim_no_unit_logic.h): the local player has had no unit long enough to be
+// dead / waiting to respawn / spectating, as the last Game_ComputeAimStick decided it. The hand still steers the
+// camera through the stick servo; nothing writes aim state. False when unknown. Any thread.
+bool Game_AimFreeCamera();
+// Shots from the muzzle, seated (defensive; converge::SeatMuzzleRefuses): whether the local player's seat
+// points the gun away from the converged point by a natural cause right now -- the direct drive held at the
+// seat's stop (Halo 3, ODST, Halo 4), or a rate-capped turret (Halo 3, ODST, where the muzzle owner check
+// cannot see a stationary turret). Refuses the redirect only; nothing else reads it. Any thread.
+converge::SeatMuzzleRefusal Game_SeatMuzzleRefusal(GameTitle title);
+// The crosshair-assist re-aim, seated (Halo 3, ODST; converge::SeatAssistReaimRefuses): only a seat held at its natural
+// stop refuses -- never a turret for being one (the game's own assist cap bounds a catch-up shot). Any thread.
+converge::SeatMuzzleRefusal Game_SeatAssistReaimRefusal(GameTitle title);
+// DEV (reach_direct_drive=4): true while the MASTER desired_angles persistence test owns Reach's aim;
+// the XInput hook then holds the aim stick neutral. Defined only in experimental Reach builds.
+bool Game_ReachDdTestOwnsAim();
+// DEV (reach_direct_drive=3): Reach direct drive, the aim provider's WriteState rung
+// (reach_aim_provider.cpp is the only caller). Defined only in experimental Reach builds.
+//   TakeDesiredAim -- the game-basis aim (radians) Game_ComputeAimStick recorded during THIS input
+//                     poll; consumed once, so a stopped aim path can never be chased.
+//   Ready          -- the hook is installed, the arm-gate has proven the player_control address, and
+//                     the hook has run on it within 150 ms (installed is not running).
+//   OnFoot         -- fresh on-foot, player-controlled Reach gameplay.
+//   AimWritable    -- where the write may drive the aim: on foot, or in a first-person seat the hand
+//                     aims (not one whose stick is steering; as reach_vehicle_aim allows). AimWhy gives
+//                     the failing conditions as bits, Seated whether the fresh sample is a seat.
+//   Publish        -- set the setpoint (radians) the sim-thread hook writes on its next tick.
+//   Release        -- invalidate it at once, so the hook stops writing and the stick servo aims alone.
+bool Game_ReachTakeDesiredAim(float& yaw, float& pitch);
+bool Game_ReachDirectDriveReady();
+bool Game_ReachDirectDriveOnFoot();
+uint32_t Game_ReachDirectDriveOnFootWhy();   // failing on-foot conditions as bits (0 = on foot)
+bool Game_ReachDirectDriveAimWritable();
+uint32_t Game_ReachDirectDriveAimWhy();      // failing aim-write conditions as bits (0 = writable)
+bool Game_ReachDirectDriveSeated();
+int Game_ReachUnitCrouchState();             // native crouch state 0/1, -1 unknown/stale (diagnostics)
+bool Game_Halo4OnFoot();                     // the local Halo 4 unit is unseated and unparented (input thread)
+// Diagnostics (the CROUCH line): what the view was last lifted by over the engine's eye -- the physical
+// crouch give-back plus the leash -- which the title's hands share (world units; 0 when none or unknown).
+// Halo 3 / ODST / Halo 4 / Halo 2; Reach keeps its own per-frame lift on the render thread (0 here).
+float Game_ViewLiftWu(GameTitle title);
+// `converged` = the core bent this setpoint through a freshly traced point. The sim-thread hook records
+// it with every write, and the firing site stands the hand shot ray down only while the angles
+// actually in desired_angles are converged ones. `seated` = the aim is a seat's: the hook then keeps its
+// write inside the limits the game clamps that seat's record to.
+void Game_ReachDirectDrivePublish(float gameYaw, float gamePitch, bool converged, bool seated);
+void Game_ReachDirectDriveRelease();
+void Game_ReachDirectDriveReport();   // cold worker: the hook's once-a-second status line
+// Reach trace-and-reaim, on foot and seated (reach_sight_trace.inl). Defined only in experimental Reach
+// builds.
+//   SightSample -- the latest rendered intent (reticle) ray and the engine eye the shot is aimed from,
+//                  all in world units, plus the latest range the sim-thread trace measured along that
+//                  ray: the hit, or on a miss (hit=false) the trace's far end, since the target is at
+//                  least that far. Only direct drive (reach_direct_drive=3) asks; asking is what keeps
+//                  the sim-thread trace running. False while the ray or the trace result is stale,
+//                  the crosshair-trace flags did not resolve on this build, or it faulted.
+//   NoteConvergedSample -- DEV builds: the exact sample and smoothed range the provider actuated, so
+//                  the shot check measures against what was aimed rather than a later sample.
+struct ReachSightSample
+{
+    float origin[3]{};   // where the intent ray starts: the player's rendered EYE (centre eye), as in
+                         // Halo: Campaign Evolved -- so a marker anywhere on the ray reads true
+    float dir[3]{};      // its unit direction: the controller's aim direction
+    float eye[3]{};      // the engine eye Reach aims from: on foot the character's eye; seated, the point
+                         // of Reach's own camera line nearest the seat (its crosshair trace starts on it)
+    float head[3]{};     // the rendered head (centre eye) of the same frame (== origin)
+    float rangeWu = 0.0f;
+    bool hit = false;
+    uint64_t raySampleMs = 0, traceSampleMs = 0;
+    uint64_t eyeStampUs = 0;   // when `eye` was published, on the sight clock (Sight_NowUs); 0 unknown
+};
+bool Game_ReachSightSample(ReachSightSample& out);
+// For the dev converge-off witness only: whether the crosshair trace's flags resolved on this build, and
+// whether the trace latched off on a native fault (the reasons Game_ReachSightSample can fail for good).
+void Game_ReachSightHealth(bool& flagsResolved, bool& faulted);
+void Game_ReachNoteConvergedSample(const ReachSightSample& sample, float smoothedRangeWu);
+// The traced reticle's range along that eye-anchored intent ray, for the compositor (any thread):
+// the latest fresh trace result -- the hit range in METRES, or hit=false on a miss -- and only while
+// the aim in effect is the converged one, so the marker and the shot come from one piece of geometry.
+bool Game_ReachSightReticleRange(float& outRangeM, bool& outHit);
+// The direction Reach's zoom camera looks along from the head (scope convergence, F1 > Scope): the
+// eye-anchored intent ray's, under the traced reticle's own gates plus scope_converge.
+bool Game_ReachScopeConvergedDirection(float outDir[3]);
 // C-H2-41. True only while Halo 2's controller-owned aim/weapon feature is
 // requested; tracking loss still makes each call fail open independently.
 bool Game_Halo2ControllerAimActive();
+bool Game_Halo2SeatAimActive();   // a Halo 2 seat owns its aim (no on-foot palette witness in a seat)
 bool Game_CeControllerFeaturesRequested();
 bool Game_ComputeHalo2SnapStick(float& outRx);
 // C-H2-89 optional feature transaction. The official H2EK boolean is resolved
@@ -191,6 +398,38 @@ void Game_Halo3UpdateVehicleWheel(const VrPadState& pad);
 bool Game_Halo3VehicleSwallowsGrips();
 // True while the wheel, rather than the turn stick, authors the steering.
 bool Game_Halo3VehicleWheelActive();
+// Vehicle cameras (vehicle_cameras.inl), for the F1 menu. Step asks for the seat's next (+1) or previous (-1)
+// camera and tethering mode; the cold worker takes it up within a poll. Readout copies one line saying which
+// camera is in use, or why none is; false when there is nothing to say (the feature is off).
+void Game_VehicleCameraStep(int cameraDirection, int modeDirection);
+bool Game_VehicleCameraReadout(char* out, size_t capacity);
+// The lag of the vehicle camera in use (F1 > Vehicles): false when no chase camera is in use. `tuned`: the player
+// has set it from the menu, in place of the camera file's.
+bool Game_VehicleCameraLag(float& seconds, float& damping, bool& tuned);
+// Sets the lag of the chase camera in use, kept for that camera in halomccvr_vehicle_cameras_tuning.txt.
+void Game_VehicleCameraSetLag(float seconds, float damping);
+// Back to the camera file's lag for the camera in use.
+void Game_VehicleCameraResetLag();
+// THE VEHICLE AIM RING (vehicle_cameras.inl; src/common/vehicle_aim_marker_logic.h): true while a Halo 3 chase
+// camera whose "aimMarker" asks for it is up and its ring was placed within the last tenth of a second. `outDir`: the
+// direction from the rendered centre eye to the point the vehicle aims at, a VR-space unit vector in the reticle's
+// convention; `outDistanceM`: how far along it the ring is drawn, VR metres.
+bool Game_GetVehicleAimMarker(float outDir[3], float& outDistanceM);
+// The vehicle camera buttons (vehicle_seat_buttons.h), for the input hook. Live: the seat the player is in is one
+// the vehicle cameras run in, so left X and left Y are theirs, and the left stick click too where `controlModes`
+// says the game's seats can be controlled more than one way; `passenger` says it is a passenger's. ControlStep asks
+// for the seat's next way to be controlled (the left stick click).
+bool Game_VehicleSeatButtonsLive(bool& passenger, bool& controlModes);
+void Game_VehicleControlStep();
+// THE THIRD-PERSON BOOM (vehicle_boom_logic.h), for the input hook and the F1 menu. TakesStick: a Halo 3 seat's
+// camera stands where the game's own third-person camera does, and the right stick's Y aims nothing in it (not a
+// stick-aimed seat), so the boom raises and lowers it. Stick hands that Y over (0 when it is not the boom's); the
+// caller sends the game none of it. Recenter puts the boom back at its camera's start. Game_VehicleBoom: false while
+// no boom is in use; else its angle and the angles it reaches, degrees above level.
+bool Game_VehicleBoomTakesStick();
+void Game_VehicleBoomStick(float y);
+void Game_VehicleBoomRecenter();
+bool Game_VehicleBoom(float& degrees, float& lowDegrees, float& highDegrees, bool& fromTrack, bool& inverted);
 // C13 per-SEAT trim: the config storage slot for the seat the player occupies
 // right now (see ConfigSeatTrimSlot; a mounted gunner reports the carrier
 // vehicle's gunner slot), -1 when on foot or unidentified, plus its display
@@ -210,12 +449,48 @@ enum class VehicleTrimBank : uint8_t
 };
 int Game_VehicleSeatTrimSlotEx(VehicleTrimBank* outBank);
 const char* Game_VehicleSeatTrimName(int slot, VehicleTrimBank bank);
-// True while a vehicle seat's own angular limit is holding the weapon short of
-// where the hand points (a warthog rider seat authors yaw +/-90, pitch +/-45
-// relative to the hull). `outDir` then carries the engine's ACTUAL aim as a
-// VR-space unit vector so the floating reticle can sit on the gun instead of
-// promising a shot the engine will never take.
-bool Game_GetClampedAimDirection(float outDir[3]);
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// [assess-only begin]
+// DEV ASSESSMENT ONLY (honest_reticle_assess): true while this input poll
+// published where the engine's shot goes, for the compositor to draw as a
+// SECOND marker beside the player's reticle (which it never moves). `outDir`
+// carries it as a VR-space unit vector. A player build does not contain it.
+// `outRangeM` > 0: the poll PLACED the mark -- `outDir` is then the
+// ray from the rendered centre eye through the point the game's shot reaches
+// (from the game's shot origin along its aim, to the first surface), and this
+// is that point's distance in VR metres; `outSurface` says the range is a
+// traced hit. 0: draw the direction from the eye at the crosshair distance.
+// Only the VR drawing code may call it (tools/check_assess_isolation.py).
+bool Game_GetClampedAimDirection(float outDir[3], float* outRangeM = nullptr,
+                                 bool* outSurface = nullptr);
+// [assess-only end]
+#endif
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// THE SHOT IMPACT WITNESS's two outside feeds (dev builds only; game.cpp halo3_impact_witness.inl). Neither decides
+// anything. The compositor, each frame it draws the traced reticle (Halo 3 / ODST / Halo 4 lane, never Reach): its
+// prepared frame's serial, the eye it drew from and the ray's direction (tracking space), and the range it was drawn
+// for (VR metres, `hit` = a traced surface). The XInput hook, every poll: whether the RT fed to the game is pressed.
+void Game_DevNoteTracedReticle(uint64_t serial, const float center[3], const float dir[3], float rangeM, bool hit);
+void Game_DevNoteFireTrigger(bool pressed);
+// A gun-slaved seat's pitch check (Halo 3 / ODST): false lets the stick servo run while the check collects its
+// evidence, as before the hold existed. For comparing the two in one sitting; a player build always holds.
+void Game_DevSetSeatPitchCheckHold(bool hold);
+// Halo 4's Broadsword view: true stands it on the seat camera's point, false leaves the observer as the game makes
+// it (the line still measures how far it trails). A player build always rides.
+void Game_DevSetBroadswordRide(bool ride);
+#endif
+// THE SEAT LIMIT RETICLE (all builds; src/common/seat_limit_reticle_logic.h):
+// true while this input poll clamped the seated reticle at a natural angular
+// stop of a land vehicle's seat (a passenger's cone, a turret's or tank gun's
+// pitch stop), so it sits where the gun is held. `outDir`: VR-space unit
+// vector, the reticle's convention. `outRangeM` > 0: the poll PLACED it -- the
+// ray from the rendered centre eye through the point the clamped shot reaches
+// (from the seat's shot origin along the clamped aim, to the first surface),
+// this far in VR metres, `outSurface` a traced hit. `outFromController`: a
+// title with no traced seat reticle; `outDir` is the reticle's own direction
+// turned by the clamp, drawn from wherever the reticle already is.
+bool Game_GetSeatLimitReticle(float outDir[3], float& outRangeM, bool& outSurface,
+                              bool& outFromController);
 // Reach-only exact-frame reticle truth: returns the completed stereo pair's
 // native seated unit aim in that pair's final center-camera local axes.
 // The compositor rotates it by the submitted stereo-center orientation.
@@ -269,6 +544,23 @@ int Input_ClaimXInputIat();
 // Injects a real XINPUT_GAMEPAD_START pulse and requests the matching
 // stereo/flat pause presentation. Used when a runtime reserves its system key.
 void Input_RequestPauseToggle();
+// How many times the player has asked for the game's menu from the controller (wraps; compare for change only).
+uint32_t Input_MenuPressSerial();
+// Project Reclaimer: every 10 s, how often its game polled the mod's pad (diagnostics worker).
+void Input_ReportGamePolls();
+struct VrPadState;
+void Input_StepHeadKeys(VrPadState& pad);
+// MCC's crouch-lock (toggle crouch) settings, read from its GameUserSettings.ini by the cold worker
+// (a timestamp check every 2 s, a parse only when MCC rewrites the file) for the CROUCH log line.
+// Diagnostic only: the file did not predict Reach's crouch behaviour in FA (see input.cpp).
+// Dev builds only (HALOMCCVR_DEV_DIAGNOSTICS); an empty stub otherwise.
+void Input_PollMccCrouchLock(uint64_t nowMs);
+// True when physical crouch learned the player's standing height only up to its cap (see
+// PhysicalCrouch::RiseCapped): the menu then suggests calibrating again while standing tall.
+bool Input_PhysicalCrouchRiseCapped();
+// Cold worker, 1 Hz: the dev CROUCH line from the snapshot the XInput hook stores (gameplay only).
+// Dev builds only; an empty stub otherwise, so the hook never formats or logs on the input thread.
+void Input_ReportPhysicalCrouch(uint64_t nowMs);
 // E-H2-13: every button mask the virtual gamepad fed the game in the last
 // `sinceMs` milliseconds, newest first, as "0x1234@-37ms ..." (buffer-bounded).
 // The game sees no other pad, so this is the whole input story behind an
@@ -287,6 +579,10 @@ bool Game_HasAuthoritativePauseState();
 // left/right render camera for the next game frame.
 void Game_SetStereoEye(int eye);
 float Game_GetWorldScale();
+// The gamepad transport the player's layout binds to Halo 3's left-weapon (secondary) reload,
+// controller 0; 0 when unknown, unbound, stale or another title (gesture_melee_bindings.inl).
+uint32_t Game_SecondaryReloadTransport(GameTitle title, uint64_t now);
+void Game_SetWorldScale(float value);
 // The F6 positional (leaning) toggle, shared by every title's camera core.
 bool Game_IsPositionalTracking();
 // >1 while the player is zoomed (weapon scope); 1.0 at hip. Drives the scope.

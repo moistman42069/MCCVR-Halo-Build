@@ -8,14 +8,26 @@
 
 inline constexpr int MENU_W = 1280;
 inline constexpr int MENU_H = 900;
+// The side panel's strip, to the right of the menu in the same texture: while Menu_SidePanelShown the headset shows it as
+// a panel of its own against the menu's right edge, and the desktop settings window widens to show it.
+inline constexpr int MENU_SIDE_W = 1160;
+inline constexpr int MENU_TEX_W = MENU_W + MENU_SIDE_W;
 
 bool Menu_Init(HWND gameWindow, ID3D11Device* device, ID3D11DeviceContext* context, DXGI_FORMAT rtFormat);
 bool Menu_IsOpen();
 bool Menu_Toggle();
+// u and v run across the whole texture (MENU_TEX_W x MENU_H): the menu, then the side panel's strip.
 void Menu_SetVrPointer(bool hit, float u, float v, bool pressed, float scrollY);
 void Menu_ClearVrPointer();
+// The right stick's push in the headset, -1 to 1 (up positive): the panel under the VR pointer scrolls smoothly, as far
+// as it is pushed (menu_stick_scroll.h). 0 stops it.
+void Menu_SetVrStickScroll(float stick);
 void Menu_PostLiveResize(); // schedules admitted resize on MCC's window thread
 ID3D11Texture2D* Menu_Render(); // draws the current frame of UI; nullptr on failure
+// True while the page shown has a side panel (the Controls page's controller diagram), as of the last Menu_Render.
+bool Menu_SidePanelShown();
+// The desktop settings window (menu_mirror.h). Beat once per frame; while attached, the menu is drawn even when closed.
+bool Menu_MirrorBeat();
 
 // Panel dragging. The panel itself is locked -- nothing inside it moves -- and
 // the ONLY way to reposition it is the grab handle along the top edge. The menu

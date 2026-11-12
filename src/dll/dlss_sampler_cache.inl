@@ -66,14 +66,16 @@ static HRESULT STDMETHODCALLTYPE CreateSamplerStateHook(ID3D11Device* device,
 static void STDMETHODCALLTYPE PSSetSamplersHook(ID3D11DeviceContext* context,UINT start,
     UINT count,ID3D11SamplerState* const* samplers)
 {
+    HookCostScope cost(hook_cost::Site::Samplers);
     const unsigned mode=g_samplerMode.load(std::memory_order_acquire);
     if(mode>=dlss_sampler::kModes||!samplers||!count||
        start>=D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT||
        count>D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT-start||
        g_samplerBiasThread.load(std::memory_order_relaxed)!=GetCurrentThreadId())
-    {g_origPSSetSamplers(context,start,count,samplers);return;}
+    {HookCostNative native(cost);g_origPSSetSamplers(context,start,count,samplers);return;}
     ID3D11SamplerState* replacements[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT]{};
     for(UINT i=0;i<count;++i) replacements[i]=BiasedSamplerTwin(samplers[i],mode);
+    HookCostNative native(cost);
     g_origPSSetSamplers(context,start,count,replacements);
 }
 

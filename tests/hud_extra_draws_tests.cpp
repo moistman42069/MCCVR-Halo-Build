@@ -24,6 +24,8 @@ static void Check(bool value,const char* message)
 {++checks;if(!value){std::fprintf(stderr,"HUD draw coverage: %s\n",message);std::exit(1);}}
 static bool ShouldHideExtraHudDraw(ID3D11DeviceContext*){return hud_visibility::Hidden();}
 static unsigned bloomScopes{},bloomActive{};
+static bool postBlocked=false;
+static bool PostEffects_ShouldSkipDraw(ID3D11DeviceContext*){return postBlocked;}
 // GPU replacement/restoration is covered by bloom_override_tests. This fixture
 // verifies every forwarded draw participates in the surrounding scope.
 struct BloomDrawScope {
@@ -52,6 +54,7 @@ static MH_STATUS Create(void* target,void* detour,void** original)
 }
 #define MH_CreateHook Create
 #define LOG(...) (++logged)
+#include "../src/common/hook_cost_scope.h"
 #include "../src/dll/hud_extra_draws.inl"
 #undef LOG
 #undef MH_CreateHook
@@ -90,6 +93,10 @@ int main()
         Check(bloomScopes==scopesBefore+1&&!bloomActive,"hidden draws do not enter bloom scope");
         hud_visibility::depth=0;Invoke(i,context,buffer);
         Check(calls==before+2,"later world/menu draw resumes forwarding");
+        postBlocked=true;Invoke(i,context,buffer);
+        Check(calls==before+2&&!bloomActive,"targeted post-effect draw is omitted without mutating resource bindings");
+        postBlocked=false;Invoke(i,context,buffer);
+        Check(calls==before+3,"turning post-effect suppression off resumes the original draw");
     }
     hud_visibility::depth=1;bool otherHidden=true;
     std::thread other([&]{otherHidden=hud_visibility::Hidden();});other.join();

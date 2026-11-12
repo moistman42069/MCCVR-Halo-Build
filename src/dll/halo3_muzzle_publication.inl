@@ -1,14 +1,15 @@
+#include "game_tls.h"
 // H3's own FP users/slots and weapon-handle member, independently established
 // in native reload-tail evidence. Capture before AND after interpolation, so
 // a later inventory lookup cannot attach an old palette to a replacement gun.
-bool Halo3CaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept
+bool Halo3CaptureGripOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept
 {
-    if(!g_config.gun_barrel_aim || !g_halo3MuzzleBindingsReady.load(std::memory_order_acquire) ||
+    if(!g_halo3GripOwnerReady.load(std::memory_order_acquire) ||
         player!=0 || slot<0 || slot>1 || !g_engineTlsIndex || !g_halo3PlayerUnitGetter ||
         !g_halo3UnitInVehicle)return false;
     __try
     {
-        auto** slots=reinterpret_cast<uint8_t**>(__readgsqword(0x58));
+        auto** slots=reinterpret_cast<uint8_t**>(HALOMCCVR_GAME_TLS_ARRAY());
         const auto* tls=slots?slots[*g_engineTlsIndex]:nullptr;
         const auto* users=tls?*reinterpret_cast<const uint8_t* const*>(tls+0x568):nullptr;
         if(!users)return false;
@@ -16,16 +17,22 @@ bool Halo3CaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon
         uint32_t weapons[2]{};
         if(owner==UINT32_MAX || g_halo3UnitInVehicle(int32_t(owner)) ||
             !Halo3ReadOwnedWeapons(owner,weapons,false) || weapons[slot]==UINT32_MAX ||
-            *reinterpret_cast<const uint32_t*>(users+slot*0x11BC+0x3C)!=weapons[slot])return false;
+            *reinterpret_cast<const uint32_t*>(users+slot*Halo3FpLayoutNow().slotStride+0x3C)!=weapons[slot])return false;
         unit=owner;weapon=weapons[slot];return true;
     }
     __except(EXCEPTION_EXECUTE_HANDLER) {return false;}
 }
 
+bool Halo3CaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept
+{
+    return (Sight_GunBarrelAim()||Sight_ShotsFromMuzzle()) && g_halo3MuzzleBindingsReady.load(std::memory_order_acquire) &&
+        Halo3CaptureGripOwner(player,slot,unit,weapon);
+}
+
 void Halo3PublishMuzzlePalette(uint16_t tag,const FpInterpolationContext& context,
     const BoneMatrix* destination,uint32_t generation) noexcept
 {
-    if(!g_config.gun_barrel_aim || !g_halo3MuzzleBindingsReady.load(std::memory_order_acquire) ||
+    if(!(Sight_GunBarrelAim()||Sight_ShotsFromMuzzle()) || !g_halo3MuzzleBindingsReady.load(std::memory_order_acquire) ||
         !context.valid || context.player!=0 || context.slot<0 || context.slot>1 ||
         !generation || context.generation!=generation || generation!=g_halo3RuntimeGeneration.load() ||
         !destination || !g_fpStereoSolveScope.armed)return;
@@ -51,6 +58,13 @@ void Halo3PublishMuzzlePalette(uint16_t tag,const FpInterpolationContext& contex
                 if(!marker || marker->nodeCount!=count || marker->node>=count)continue;
                 const auto& node=destination[marker->node];
                 if(!weapon_muzzle::Transform(*marker,node.scale,node.rotation,node.translation,ray))continue;
+                if ((g_config.barrel_pitch_deg!=0 ||
+                    g_config.barrel_yaw_deg!=0 || g_config.barrel_roll_deg!=0)) {
+                    BoneMatrix visual{},neutral{};float scale=1;
+                    if (!DesiredWristWorld(context.slot==1,visual,scale,nullptr,&neutral) ||
+                        !weapon_alignment::Reframe(visual.rotation,visual.translation,
+                            neutral.rotation,neutral.translation,ray)) continue;
+                }
                 palette.barrels[barrel]={GameTitle::Halo3,generation,unit,weapon,checksum,
                     tracking.referenceEpoch,tracking.serial,now,tracking.timeNs,uint8_t(context.slot),
                     barrel,g_config.left_handed,ray};
@@ -69,7 +83,7 @@ void Halo3PublishMuzzlePalette(uint16_t tag,const FpInterpolationContext& contex
             transform.axis[2]={-cg*ch+sg*sh,-sg*ch-cg*sh,0};
             const auto reference=transform.World({g_headPosRef[0],g_headPosRef[1],g_headPosRef[2]});
             transform.origin={g_baseCamX.load()-reference.x,g_baseCamY.load()-reference.y,
-                g_baseCamZ.load()-reference.z};
+                BaseCamHandsZ()-reference.z};
             VR_PublishWeaponReticleRay(GameTitle::Halo3,uint8_t(context.slot),palette.barrels[0],transform);
         }
     }

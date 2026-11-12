@@ -3,6 +3,7 @@ bool Halo2AnniversaryStereo_Poll(
     bool activeAndRange, bool levelRunning, bool coldPassed,
     bool remasteredRendererLive, uintptr_t observerResultArray) noexcept
 {
+    ReportPropagatedGameFaults(moduleBase, moduleSize);
     static uint32_t reportedScopeFaults=0;
     const auto scopeFaults=g_zoomFaults.load();
     if(scopeFaults!=reportedScopeFaults)

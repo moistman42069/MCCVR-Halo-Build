@@ -260,6 +260,75 @@ int main(int argc,char** argv)
             std::memcmp(&sentinel,&stock,sizeof(stock))==0&&
             std::memcmp(&inverse,&savedInverse,sizeof(inverse))==0,
             "invalid tracking frame leaves both outputs untouched");
+        // THE SEAT'S VIEW HEADING (Reference::seatHeading). In a seat the native camera may follow the very aim the
+        // hand writes (a Warthog gunner's camera is the gun), so the frame's heading is the player's control yaw.
+        {
+            const auto cameraLooking=[&](float yaw,float pitch)
+            {
+                Camera camera=stock;
+                camera.forward={std::cos(pitch)*std::cos(yaw),std::cos(pitch)*std::sin(yaw),std::sin(pitch)};
+                const Vec3 right{std::sin(yaw),-std::cos(yaw),0};
+                camera.up=Cross(right,camera.forward);
+                return camera;
+            };
+            Reference seat=reference;
+            check(!seat.seatHeadingValid,"a reference has no seat heading until one is read");
+            Camera onFoot{};Quat onFootInverse{};
+            const Camera looking=cameraLooking(0.7f,-0.4f);
+            check(Valid(looking)&&BuildTrackingFrame(looking,seat,onFoot,onFootInverse)&&
+                nearVector(onFoot.forward,{std::cos(0.7f),std::sin(0.7f),0})&&nearVector(onFoot.up,{0,0,1}),
+                "on foot the frame keeps the native camera's heading");
+            seat.seatHeadingValid=true;seat.seatHeading={0,1,0};
+            bool fixed=true;
+            for (float yaw=-3.0f;yaw<3.1f;yaw+=0.37f)
+                for (float pitch=-1.2f;pitch<1.3f;pitch+=0.6f)
+                {
+                    Camera frame{};Quat inverse{};
+                    const Camera gun=cameraLooking(yaw,pitch);
+                    fixed=fixed&&Valid(gun)&&BuildTrackingFrame(gun,seat,frame,inverse)&&
+                        nearVector(frame.forward,{0,1,0})&&nearVector(frame.up,{0,0,1})&&
+                        nearVector(frame.position,gun.position)&&
+                        nearVector(Rotate(inverse,{0,0,-1}),Rotate(onFootInverse,{0,0,-1}));
+                }
+            check(fixed,"in a seat the frame's heading is the control yaw wherever the native camera points; "
+                "its position and the recentre yaw are unchanged");
+            // Not a heading: the native camera's, as before (never a rejected frame).
+            Camera fallback{};Quat fallbackInverse{};
+            seat.seatHeading={0,0,1};
+            check(BuildTrackingFrame(looking,seat,fallback,fallbackInverse)&&nearVector(fallback.forward,onFoot.forward),
+                "a vertical seat heading falls back to the native camera's");
+            seat.seatHeading={std::numeric_limits<float>::quiet_NaN(),1,0};
+            check(BuildTrackingFrame(looking,seat,fallback,fallbackInverse)&&nearVector(fallback.forward,onFoot.forward),
+                "a non-finite seat heading falls back to the native camera's");
+            // The runaway this exists for. The camera follows the aim; the hand is held 10 degrees off the
+            // reference's forward. Through the camera's own frame every update adds the offset again (a turn rate);
+            // through the seat heading the aim is one fixed direction.
+            const float offset=10.0f*0.017453292f;
+            const Quat hand=Multiply({0,std::sin(offset*.5f),0,std::cos(offset*.5f)},reference.orientation);
+            const auto aimThrough=[&](const Reference& via,float cameraYaw)
+            {
+                Camera frame{};Quat inverse{};
+                if (!BuildTrackingFrame(cameraLooking(cameraYaw,-0.2f),via,frame,inverse)) return 1000.0f;
+                const Vec3 aim=ToNative(frame,Rotate(Multiply(inverse,hand),{0,0,-1}));
+                return std::atan2(aim.y,aim.x);
+            };
+            Reference control=reference;
+            control.seatHeadingValid=true;control.seatHeading={std::cos(0.3f),std::sin(0.3f),0};
+            float followed=0.3f,held=0.3f,travelled=0,heldSpread=0;
+            const float heldFirst=aimThrough(control,held);
+            for (int update=0;update<30;++update)
+            {
+                const float next=aimThrough(reference,followed);
+                travelled+=std::fabs(std::remainder(next-followed,6.2831853f));
+                followed=next;                                   // the camera follows the aim it was given
+                held=aimThrough(control,held);
+                heldSpread=std::max(heldSpread,std::fabs(std::remainder(held-heldFirst,6.2831853f)));
+            }
+            check(std::fabs(travelled-30*offset)<0.001f,
+                "CONTROL: through an aim-following camera a 10 degree hand offset turns 10 degrees every update");
+            check(heldSpread<0.00001f&&std::fabs(std::fabs(std::remainder(heldFirst-0.3f,6.2831853f))-offset)<0.0001f,
+                "through the seat heading the same hand aims one fixed direction, 10 degrees off the control yaw");
+        }
     }
     const SaberCamera savedEye=saberEye;
     saberStock.viewportWidth=std::numeric_limits<float>::infinity();

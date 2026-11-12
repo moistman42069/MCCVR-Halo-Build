@@ -3,6 +3,10 @@
 #include "../common/runtime_types.h"
 
 using BloomSetResourcesFn=void(STDMETHODCALLTYPE*)(ID3D11DeviceContext*,UINT,UINT,ID3D11ShaderResourceView* const*);
+// ShaderToggler-style pass suppression, independently admitted from the old SRV cache.
+void PostEffects_SetAvailable(bool available) noexcept;
+void PostEffects_ObserveDevice(ID3D11Device*) noexcept;
+bool PostEffects_ShouldSkipDraw(ID3D11DeviceContext*) noexcept;
 void Bloom_SetAvailable(bool available,BloomSetResourcesFn original) noexcept;
 void Bloom_ObserveSrvCreated(ID3D11Device*,ID3D11ShaderResourceView*) noexcept;
 void Bloom_ObserveShaderCreated(ID3D11PixelShader*,const void*,size_t) noexcept;

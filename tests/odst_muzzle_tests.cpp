@@ -1,3 +1,5 @@
+#include "../src/common/legacy_weapon_visual_defaults.h"
+#include "../src/common/visual_aim.h"
 #include <Windows.h>
 #include <MinHook.h>
 #include <atomic>
@@ -18,11 +20,16 @@ static constexpr uintptr_t imageBase=0x180000000;
 static constexpr size_t kOdstTlsObjectTableOffset=0x20;
 static std::atomic<uint32_t> g_odstRuntimeGeneration{7};
 static std::atomic<bool> g_vrAim{true},g_enabled{true},g_odstMuzzleBindingsReady{true};
-static struct {bool gun_barrel_aim=true,left_handed=false,independent_dual_aim=false;
-    float crosshair_distance_m=10,gun_yaw_deg=0,gun_pitch_deg=0,gun_roll_deg=0;} g_config;
+static struct {float barrel_pitch_deg=0,barrel_yaw_deg=0,barrel_roll_deg=0;bool gun_barrel_aim=true,left_handed=false,independent_dual_aim=false;
+    float crosshair_distance_m=10,gun_yaw_deg=0,gun_pitch_deg=0,gun_roll_deg=0;bool shots_from_muzzle=false;} g_config;
+// The three shot switches as they are in effect (sight_layer.h); here, the test's own config.
+[[maybe_unused]] static bool Sight_ShotsFromMuzzle(){return g_config.shots_from_muzzle;}
+[[maybe_unused]] static bool Sight_GunBarrelAim(){return g_config.gun_barrel_aim;}
+[[maybe_unused]] static bool Sight_IndependentDualAim(){return g_config.independent_dual_aim;}
 static float Game_GetWorldScale(){return 1.f;}
 static std::atomic<bool> g_baseCamValid{true};
 static std::atomic<float> g_worldScale{1},g_baseCamX{0},g_baseCamY{0},g_baseCamZ{0};
+static float BaseCamHandsZ(){return g_baseCamZ.load();}
 static float g_headYawRef=0,g_gameYawRef=0,g_headPosRef[3]{};
 static void BuildTrackedGameBasisFromFrame(const float* orientation,bool,bool,int,int,float* basis)
 {std::memcpy(basis,orientation,12);basis[4]=basis[8]=1;}
@@ -48,6 +55,16 @@ static bool OdstContactObject(uint32_t handle)
     return *reinterpret_cast<const uint16_t*>(entry)==uint16_t(handle>>16)&&*reinterpret_cast<const void* const*>(entry+0x10);
 }
 static GameTitle TitleAdapter_GetActiveTitle(){return title;}
+static uint32_t TitleAdapter_GetGeneration(GameTitle){return 7;}
+// Shots from the muzzle (sight_layer.h): admitted only with the barrel aim off; the converged point itself is
+// sight_layer's (aim_solve_tests), so here it keeps the barrel's direction and counts the asks.
+static unsigned muzzleAimCalls=0;static bool muzzleAimRefuses=false;
+static bool Sight_MuzzleShotsConverge(){return g_config.shots_from_muzzle&&!g_config.gun_barrel_aim;}
+static bool Sight_AimMuzzleShot(GameTitle,uint32_t,const float*,const float*,float*,float*)
+{++muzzleAimCalls;return !muzzleAimRefuses;}
+// The seat guard (game.cpp SeatMuzzleShotHeld): a seat held at its stop or a turret refuses the redirect.
+static unsigned seatHeldCalls=0;static bool seatHeld=false;
+static bool SeatMuzzleShotHeld(GameTitle){++seatHeldCalls;return seatHeld;}
 static bool VR_IsStereoEnabled(){return stereo;}
 static CinematicControlState ReadOdstCinematicControl(int32_t&,int32_t&)
 {return cinematic?CinematicControlState::AuthoredLocked:CinematicControlState::PlayerControlled;}
@@ -59,6 +76,8 @@ static bool VR_GetContactTrackingSnapshot(VrContactTrackingSnapshot& out){out=tr
 static int ResolveEquippedWeaponSlot(uint32_t weapon,uint32_t a,uint32_t b,bool,bool)
 {return weapon==a?0:weapon==b?1:-1;}
 struct BoneMatrix {float scale=1,rotation[9]{1,0,0,0,1,0,0,0,1},translation[3]{};};
+static bool DesiredWristWorld(bool,BoneMatrix& visual,float& scale,float*,BoneMatrix* neutral)
+{visual={};*neutral=visual;scale=1;return true;}
 struct FpInterpolationContext
 {bool valid=true;int player=0,slot=0;uint32_t generation=7,muzzleUnit=owner,muzzleWeapon=primary;};
 static struct {bool armed=true;VrContactTrackingSnapshot anatomicalTracking;} g_fpStereoSolveScope;
@@ -69,8 +88,21 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle value,uint16_t tag,uint32_t
 #define __readgsqword(offset) reinterpret_cast<uint64_t>(::slots)
 #include "../src/dll/odst_muzzle_publication.inl"
 #undef __readgsqword
+// The shot-lag fix (sight_layer.h / game.cpp): the fire's `predicted` flag rides a thread-local for the witness.
+enum class SightShotPath : uint8_t {Native=0,CrosshairAssist,Muzzle,UnitAdjust,Count};
+static thread_local int t_legacyFirePredicted=-1;
+static unsigned shotLagNotes{};
+static void Sight_NoteShotLagFromIntent(GameTitle,SightShotPath,const float*,const float*,int,bool,int32_t)
+{++shotLagNotes;}
+static int32_t LegacyCollisionIgnoredObject(GameTitle){return -1;}
+// THE LOCAL PLAYER'S FIRE (shot_lag_logic.h FireMark; game.cpp t_odstFire): opened by the fire, marked by its line.
+#include "../src/common/shot_lag_logic.h"
+static thread_local int8_t t_odstFire=shot_lag::kFireNone;
 static thread_local uintptr_t caller{};
 #define _ReturnAddress() reinterpret_cast<void*>(::caller)
+// Aim Frame Zoom's record of the game's zoom level (game.cpp); the lane only reports it.
+static int g_notedZoomLevel=-2;
+static void NoteGameZoomLevel(GameTitle,int16_t level,uint32_t){g_notedZoomLevel=level;}
 #include "../src/dll/odst_muzzle_shots.inl"
 #include "../src/dll/odst_independent_publication.inl"
 #undef _ReturnAddress
@@ -221,6 +253,14 @@ static void ShotTests()
     Reset();float dir[3]{0,1,0},control[3]{};uint8_t nativeTarget[0x28]{};g_odstMuzzleQueryContext={};
     OdstMuzzleQueryDetour(2,0,dir,3,control,nativeTarget);Check(g_odstMuzzleQueryContext.unit==owner&&g_odstMuzzleQueryContext.inputUser==2,"ordinary native query captures its real owner and input user");
     g_odstMuzzleQueryContext={};OdstMuzzleQueryDetour(2,1,dir,3,control,nativeTarget);Check(!g_odstMuzzleQueryContext.sampleMs,"lead-only fallback does not replace ordinary context");
+    // Aim Frame Zoom: the local player's ordinary query reports the game's zoom level; nobody else's, and never ours.
+    g_notedZoomLevel=-2;OdstMuzzleQueryDetour(2,0,dir,3,control,nativeTarget);Check(g_notedZoomLevel==-2,"another player's query is not the zoom level");
+    g_odstMuzzle.queryOriginal=nullptr;   // the native stand-in insists on the owner's user and zoom
+    OdstMuzzleQueryDetour(0,1,dir,1,control,nativeTarget);Check(g_notedZoomLevel==-2,"a lead-only query is not the zoom level");
+    g_legacyCollisionOwnedQuery=true;OdstMuzzleQueryDetour(0,0,dir,1,control,nativeTarget);g_legacyCollisionOwnedQuery=false;Check(g_notedZoomLevel==-2,"our own query is not the zoom level");
+    OdstMuzzleQueryDetour(0,0,dir,1,control,nativeTarget);Check(g_notedZoomLevel==1,"the local player's query is");
+    OdstMuzzleQueryDetour(0,0,dir,-1,control,nativeTarget);Check(g_notedZoomLevel==-1,"not zoomed is -1");
+    g_odstMuzzle.queryOriginal=NativeQuery;g_odstMuzzleQueryContext={};
     Reset();std::thread isolated([]{Check(!g_odstMuzzleQueryContext.sampleMs&&!g_odstMuzzleRequest.lease,"native query and firing scope are thread local");});isolated.join();
 }
 static void PublicationTests()
@@ -354,6 +394,15 @@ static void LifecycleTests()
 int main()
 {
     ShotTests();PublicationTests();
+    // Shots from the muzzle: the control asks for the converged point; a seat held at its stop or a turret
+    // (SeatMuzzleShotHeld; unit_in_vehicle reads false in a stationary turret) refuses before asking.
+    Reset();g_config.gun_barrel_aim=false;g_config.shots_from_muzzle=true;muzzleAimCalls=0;seatHeld=false;
+    (void)Shoot();Check(muzzleAimCalls==1&&fireCalls==1,"ODST shots from the muzzle ask for the point (control)");
+    Reset();g_config.gun_barrel_aim=false;g_config.shots_from_muzzle=true;muzzleAimCalls=0;seatHeld=true;
+    seatHeldCalls=0;expectMuzzle=false;(void)Shoot();
+    Check(seatHeldCalls==1&&muzzleAimCalls==0&&fireCalls==1&&*reinterpret_cast<uint32_t*>(unitBytes+0x230)==0x44440007,
+        "ODST seat held at its stop or a turret refuses the redirect; native fire forwarded once");
+    seatHeld=false;
     Reset(true);g_config.gun_barrel_aim=false;g_config.independent_dual_aim=true;expectMuzzle=false;
     Check(!kEnableOdstIndependentAim,"ODST dual expansion stays disabled after scope correction");
     (void)Shoot();Check(fireCalls==1&&queryCalls==0,"H2/H3 dual option does not adapt ODST firing");

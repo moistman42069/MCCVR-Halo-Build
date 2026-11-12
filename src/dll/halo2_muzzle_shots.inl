@@ -23,7 +23,7 @@ bool ApplyHalo2MuzzleMarker(uint32_t object,uint16_t count,void* markers,int16_t
 {
     auto& feature=g_halo2Muzzle;
     const auto request=g_halo2MuzzleRequest;
-    if(!feature.enabled.load() || feature.faulted.load() || !g_config.gun_barrel_aim ||
+    if(!feature.enabled.load() || feature.faulted.load() || !(Sight_GunBarrelAim()||Sight_MuzzleShotsConverge()) ||
         !g_halo2Dual.enabled.load() || g_halo2Dual.faulted.load() || exclusive_input::Active() ||
         !Game_Halo2ControllerAimActive() || !Halo2Observer6Dof_FinalPaletteArmed() ||
         !Halo2Observer6Dof_DirectWeaponAimArmed() ||
@@ -53,6 +53,8 @@ bool ApplyHalo2MuzzleMarker(uint32_t object,uint16_t count,void* markers,int16_t
     // call later still supplies the engine's actual projectile velocity.
     float velocity[3]{},direction[3]{};
     std::memcpy(direction,muzzle.ray.direction,12);
+    float before[3]{};
+    std::memcpy(before,muzzle.ray.position,12);
     const bool previousCollisionQuery=g_halo2CollisionOwnQuery;
     g_halo2CollisionOwnQuery=true;
     __try
@@ -63,7 +65,18 @@ bool ApplyHalo2MuzzleMarker(uint32_t object,uint16_t count,void* markers,int16_t
     __finally {g_halo2CollisionOwnQuery=previousCollisionQuery;}
     for(int axis=0;axis<3;++axis)
         if(!std::isfinite(muzzle.ray.position[axis])||!std::isfinite(direction[axis]))return false;
-    if(!AcquireHalo2IndependentShot(request.weapon,*request.lease,&muzzle))return false;
+    // SHOTS FROM THE MUZZLE (sight_layer.h): keep the origin the obstruction check left, but fly through the
+    // converged point instead of along the barrel. A refusal refuses the barrel shot: it leaves the eye.
+    // The second gun under independent dual aim follows its own controller (the shot that lane prepared).
+    // The firing assist's acquisition aims at the carrier's point `distance` along it, so that point is the
+    // converged point itself -- handed to the acquisition, which runs the query that consumes it.
+    float throughDistance=0.0f;
+    if(!Sight_GunBarrelAim() &&
+        ((slot==1&&Sight_IndependentDualAim()) ||
+         !Halo2AimMuzzleShot(before,muzzle.ray.position,muzzle.ray.direction,muzzle.ray.up,throughDistance)))
+        return false;
+    if(!AcquireHalo2IndependentShot(request.weapon,*request.lease,&muzzle,
+        Sight_GunBarrelAim()?0.0f:throughDistance))return false;
     // Preserve the native local matrix, node/region identity, scale and flags.
     // Its world orientation/position now matches the verified visible marker.
     auto* bytes=static_cast<uint8_t*>(markers);

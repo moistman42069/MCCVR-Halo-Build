@@ -50,6 +50,6 @@ bool InstallHalo2Muzzle(uintptr_t base,size_t size)
     if(MH_EnableHook(target)!=MH_OK)
     {LOG("Halo 2 muzzle StockFallback: marker hook enable failed");(void)RemoveHalo2Muzzle();return false;}
     feature.enabled.store(true,std::memory_order_release);
-    LOG("Halo 2 muzzle Installed: optional committed FP marker, native targeting/obstruction; option=%d",g_config.gun_barrel_aim?1:0);
+    LOG("Halo 2 muzzle Installed: optional committed FP marker, native targeting/obstruction; option=%d",Sight_GunBarrelAim()?1:0);
     return true;
 }

@@ -32,12 +32,13 @@ struct Held {uint16_t milliseconds{};uint8_t frames{};};
 struct Local {
     uint32_t generation{};
     uint64_t publishedAt{},convertedAt{},cancelEpoch{};
+    uint32_t blocked{};
     bool converted{},direct{};
     Held held[vr_mapping::Count]{};
 } thread_local local;
 bool Current() noexcept {
     return runtime.admitted.load(std::memory_order_acquire) &&
-        !runtime.faulted.load(std::memory_order_relaxed) && g_config.vr_action_mapping &&
+        !runtime.faulted.load(std::memory_order_relaxed) && (g_config.vr_action_mapping||Config_GestureOnlyWeaponInput()) &&
         TitleAdapter_GetActiveTitle()==title &&
         TitleAdapter_GetGeneration(title)==runtime.generation.load(std::memory_order_acquire);
 }
@@ -50,16 +51,16 @@ void __fastcall ConverterHook(unsigned controller,int deltaMs,const void* raw,vo
         if(controller!=0)return;
         const auto now=GetTickCount64(),epoch=publication.cancelEpoch.load(std::memory_order_acquire);
         const auto generation=runtime.generation.load(std::memory_order_acquire);
-        uint32_t actions=0;bool direct=false;uint64_t publishedAt=0;
+        uint32_t actions=0,blocked=0;bool direct=false;uint64_t publishedAt=0;
         if(Current() && deltaMs>=0 && deltaMs<=1000 &&
-            ReadPublication(now,actions,direct,&publishedAt,title,generation) &&
+            ReadPublication(now,actions,direct,&publishedAt,title,generation,&blocked) &&
             epoch==publication.cancelEpoch.load(std::memory_order_acquire)) {
             if(local.generation!=generation){local={};local.generation=generation;}
-            local.converted=true;local.direct=direct;local.publishedAt=publishedAt;
+            local.converted=true;local.direct=direct;local.blocked=blocked;local.publishedAt=publishedAt;
             local.convertedAt=now;local.cancelEpoch=epoch;
             for(unsigned i=0;i<vr_mapping::Count;++i) {
                 auto& value=local.held[i];
-                if(!direct || !(actions&(1u<<i)))value={};
+                if((!direct&&!(blocked&(1u<<i))) || !(actions&(1u<<i)))value={};
                 else {
                     value.frames=static_cast<uint8_t>(std::min(unsigned(value.frames)+1u,255u));
                     value.milliseconds=static_cast<uint16_t>(std::min(unsigned(value.milliseconds)+unsigned(deltaMs),65535u));
@@ -99,15 +100,16 @@ void Apply(int user,unsigned controller,uintptr_t caller,Overlay& overlay) noexc
             publication.generation.load(std::memory_order_acquire)!=local.generation ||
             local.cancelEpoch!=publication.cancelEpoch.load(std::memory_order_acquire))return;
         runtime.consumerAt.store(now,std::memory_order_release);
-        if(!local.direct)return;
+        if(!local.direct&&!local.blocked)return;
         overlay.state=reinterpret_cast<unsigned char*>(runtime.state);
         for(unsigned i=0;i<vr_mapping::Count;++i) {
             const auto action=vr_mapping::NativeAction(title,static_cast<vr_mapping::Action>(i));
-            if(action>=25 || !local.held[i].frames)continue;
+            const bool suppress=(local.blocked&(1u<<i))!=0;
+            if(action>=25 || (!local.held[i].frames&&!suppress))continue;
             Held native{};
             if(!ReadDigital(overlay.state,action,native)){runtime.faulted=true;return;}
-            // A physical keyboard/pad action remains fully authoritative.
-            if(native.frames)continue;
+            // Keep native actions authoritative except explicit gesture-only policy.
+            if(native.frames&&!suppress)continue;
             overlay.native[i]=native;
             overlay.borrowed[i]=local.held[i];
             overlay.changed|=1u<<i; // restore even if the second write faults
@@ -132,7 +134,7 @@ void Resume(Overlay& overlay) noexcept {
             if(!ReadDigital(overlay.state,action,native)){runtime.faulted=true;return;}
             // If a nested native call changed physical counters, retain them.
             overlay.native[i]=native;
-            if(native.frames){overlay.changed&=~(1u<<i);continue;}
+            if(native.frames&&!(local.blocked&(1u<<i))){overlay.changed&=~(1u<<i);continue;}
             if(!WriteDigital(overlay.state,action,overlay.borrowed[i])){runtime.faulted=true;return;}
     }
 }
@@ -176,7 +178,9 @@ bool Retire() {
         if(MH_RemoveHook(runtime.target[i])!=MH_OK)return false;
         runtime.target[i]=runtime.original[i]=nullptr;
     }
-    if(runtime.module)FreeLibrary(runtime.module);
+    // The reference goes last, and the unload gate is told after it has gone: a load of this DLL that was waiting for
+    // this teardown may go on, and finds the old image unloaded.
+    if(runtime.module) { const HMODULE held=runtime.module;FreeLibrary(held);HostUnloadGate_Unpin(held); }
     runtime.module=nullptr;runtime.base=runtime.state=0;runtime.generation=0;runtime.consumerAt=0;runtime.faulted=false;
     return true;
 }
@@ -197,14 +201,25 @@ void Poll() {
         if(!Retire())return;
         LOG("Native VR action bridge CE: retired faulted optional hooks; transport routing retained");
     }
-    if(runtime.module&&(active!=title||generation!=runtime.generation.load(std::memory_order_acquire)))
+    // THE REFERENCE ON THE GAME DLL IS HELD ONLY WHILE THE TITLE'S CAMERA CORE IS INSTALLED (game.h GameTitleCoreState),
+    // as Halo 4's and Halo 2's are. Held until another title started, it kept halo1.dll past the game's end: MCC's
+    // reload for its menus took the old image, and the next Halo CE game crashed a second into its load.
+    GameTitleCoreState core{};
+    const bool coreSays=Game_TitleCoreState(title,core);
+    if(runtime.module&&(active!=title||generation!=runtime.generation.load(std::memory_order_acquire)||
+        (coreSays&&!core.installed)))
         if(!Retire())return;
-    if(active!=title||!generation||generation==blockedGeneration||!g_config.vr_action_mapping)return;
+    if(active!=title||!generation||(coreSays&&!core.installed)||generation==blockedGeneration||
+        !(g_config.vr_action_mapping||Config_GestureOnlyWeaponInput()))return;
     if(!runtime.module) {
         vr_mapping::Transports fallback{};
         if(!Game_ReadVrActionBindings(fallback,GetTickCount64()))return;
         const auto* descriptor=TitleRegistry_Find(title);
         if(!descriptor||!GetModuleHandleExW(0,descriptor->moduleName,&runtime.module))return;
+        // MCC's reload of this DLL at the game's end waits for the core's teardown and this lane's.
+        if(coreSays&&core.tearingDown)
+            HostUnloadGate_Pin(runtime.module,core.tearingDown,core.lastFrameMs,descriptor->displayName,
+                               core.lastFrameMs!=nullptr);
         runtime.base=reinterpret_cast<uintptr_t>(runtime.module);runtime.generation=generation;
         uintptr_t base=0;size_t size=0;DWORD64 imageBase=0;
         bool proved=sig::ModuleRange(descriptor->moduleName,base,size)&&base==runtime.base&&

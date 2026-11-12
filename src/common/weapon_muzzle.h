@@ -114,6 +114,9 @@ public:
         if(!Fresh(sample,title,generation,unit,weapon,space,now,timeNs,slot,barrel,leftHanded))return false;
         output=sample;return true;
     }
+    // The committed palette as published, unjudged: for a diagnostic that says why Read refused it.
+    bool Peek(GameTitle title,uint8_t slot,Palette& output) const noexcept
+    { return Supported(title) && slot<2 && slots_[static_cast<unsigned>(title)][slot].Read(output); }
 };
 }
 

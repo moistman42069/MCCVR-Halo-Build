@@ -54,12 +54,12 @@ bool EyeCache::Enter() noexcept
     return use_.compare_exchange_strong(expected,1,std::memory_order_acquire);
 }
 void EyeCache::Leave() noexcept { use_.store(0,std::memory_order_release); }
-void EyeCache::ClearFrame() noexcept { key_={}; mask_=0; depthMask_=0; complete_=false; }
+void EyeCache::ClearFrame() noexcept { key_={}; mask_=0; depthMask_=0; complete_=false; mono_=false; }
 void EyeCache::ReleaseResources() noexcept
 {
     ClearFrame();
     ReleaseDepthResources();
-    completedKey_={}; completedTracking_={};
+    completedKey_={}; completedTracking_={}; completedMono_=false;
     for (auto*& eye:eyes_) { if (eye) eye->Release(); eye=nullptr; }
     for (auto*& eye:completedEyes_) { if (eye) eye->Release(); eye=nullptr; }
     if (context_) context_->Release();
@@ -149,7 +149,7 @@ bool EyeCache::Begin(const ClassicViewPair& pair,Key& key) noexcept
     if (valid)
     {
         key_={generation_,t.spaceEpoch,t.serial,resourceEpoch_};
-        tracking_=t; covers_[0]=covers_[1]=pair.cover; key=key_;
+        tracking_=t; covers_[0]=covers_[1]=pair.cover; key=key_; mono_=pair.mono;
     }
     Leave(); return valid;
 }
@@ -196,19 +196,22 @@ bool EyeCache::CapturePacked(Key key,ID3D11DeviceContext* context,
 bool EyeCache::Finish(Key key) noexcept
 {
     if (!Enter()) return false;
-    const bool valid=key.serial&&key==key_&&mask_==3&&!complete_;
+    // A mono frame is complete with its one picture, captured as eye 0.
+    const bool valid=key.serial&&key==key_&&mask_==(mono_?1u:3u)&&!complete_;
     if (valid)
     {
         // Publish pixels and their exact tracking identity together. Both
         // banks were allocated cold; no COM ownership changes occur here.
-        for (int eye=0;eye<2;++eye)
+        // A mono frame swaps eye 0's bank only; AcquireCompleted hands its picture out for both eyes.
+        for (int eye=0;eye<(mono_?1:2);++eye)
         {
             auto* previous=completedEyes_[eye];
             completedEyes_[eye]=eyes_[eye];eyes_[eye]=previous;
-            completedCovers_[eye]=covers_[eye];
         }
-        completedKey_=key_;completedTracking_=tracking_;complete_=true;
-        completedDepthValid_=depthMask_==3;
+        for (int eye=0;eye<2;++eye) completedCovers_[eye]=covers_[eye];
+        completedKey_=key_;completedTracking_=tracking_;complete_=true;completedMono_=mono_;
+        // DLSS reconstructs each eye from its own depth; a mono frame has one (and mono is refused under it).
+        completedDepthValid_=!mono_&&depthMask_==3;
         completedDepthHistoryEpoch_=completedDepthValid_?depthHistoryEpoch_:0;
         if(completedDepthValid_) for(int eye=0;eye<2;++eye) {
             std::swap(depth_[eye],completedDepth_[eye]);
@@ -233,7 +236,8 @@ bool EyeCache::AcquireCompleted(Key key,ID3D11DeviceContext* submissionContext,C
     { Leave(); return false; }
     const uint64_t borrow=++lastBorrowId_;
     out={completedKey_,completedTracking_,{completedCovers_[0],completedCovers_[1]},
-        {completedEyes_[0],completedEyes_[1]},cache_,borrow};
+        {completedEyes_[0],completedMono_?completedEyes_[0]:completedEyes_[1]},cache_,borrow};
+    out.monoEye=completedMono_?0:-1;
     if(completedDepthValid_) {
         out.depthDescriptor=depthDescriptor_;
         out.depthHistoryEpoch=completedDepthHistoryEpoch_;

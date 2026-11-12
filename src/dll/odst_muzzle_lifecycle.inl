@@ -94,7 +94,7 @@ bool InstallOdstMuzzle(uintptr_t base,size_t size,uint32_t generation)
         if(MH_EnableHook(target)!=MH_OK)
         {LOG("ODST muzzle StockFallback: hook enable failed");(void)RemoveOdstMuzzle();return false;}
     feature.enabled.store(true,std::memory_order_release);g_odstMuzzleBindingsReady.store(true,std::memory_order_release);
-    LOG("ODST muzzle Installed: optional committed FP barrel with native targeting/obstruction; option=%d",g_config.gun_barrel_aim?1:0);
+    LOG("ODST muzzle Installed: optional committed FP barrel with native targeting/obstruction; option=%d",Sight_GunBarrelAim()?1:0);
     return true;
 }
 void ReportOdstMuzzle()
@@ -102,5 +102,5 @@ void ReportOdstMuzzle()
     auto& feature=g_odstMuzzle;if(!feature.targets[0])return;
     LOG("ODST barrel trajectory: enabled=%d fault=%d applied=%llu refused=%llu queries=%llu restoreRefused=%llu option=%d",
         feature.enabled.load()?1:0,feature.faulted.load()?1:0,feature.applied.exchange(0),feature.refused.exchange(0),
-        feature.queries.exchange(0),feature.restoreRefused.exchange(0),g_config.gun_barrel_aim?1:0);
+        feature.queries.exchange(0),feature.restoreRefused.exchange(0),Sight_GunBarrelAim()?1:0);
 }

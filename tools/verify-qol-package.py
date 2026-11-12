@@ -23,17 +23,14 @@ TITLES = ("halo3", "odst", "reach", "halo4", "ce", "halo2")
 ACTIONS = ("fire", "grenade", "jump", "melee", "reload", "interact", "switch_weapon",
            "switch_grenade", "equipment", "crouch", "zoom", "flashlight", "sprint")
 REQUIRED_PAYLOAD = {
-    "HaloMCCVR.dll", "halomccvr.cfg", "INSTALL-MANIFEST.sha256",
-    "BUILD-IDENTITY.txt", "LICENSE", "MANUAL-README.txt", "THIRD-PARTY-LICENSES.txt",
-    "RELEASE-NOTES.md", "IMPLEMENTATION-STATUS.md", "PREVIOUS-IMPLEMENTATION-STATUS.md", "nvngx_dlss.dll",
-    "LINUX-LOGIN-REVIEW.md", "FINGER-JOINT-IDENTITY.md",
+    "HaloMCCVR.dll", "HaloMCCVRSettings.exe", "HaloMCCVRInject.exe", "halomccvr.cfg", "INSTALL-MANIFEST.sha256",
+    "BUILD-IDENTITY.txt", "CREDITS.txt", "LICENSE", "MANUAL-README.txt", "THIRD-PARTY-LICENSES.txt",
+    "RELEASE-NOTES.md", "nvngx_dlss.dll",
     "licenses/NVIDIA-DLSS/LICENSE.txt", "licenses/NVIDIA-DLSS/NOTICE.txt",
     "TelemetryAnalyser/analyse_mccvr_telemetry.py",
     "assets/fonts/Oxanium.ttf", "assets/fonts/OFL-Oxanium.txt", "assets/fonts/SOURCE.txt",
 }
-ROOT_FILES = {"HaloMCCVRLauncher.exe", "README.txt", "RELEASE-NOTES.md",
-              "IMPLEMENTATION-STATUS.md", "PREVIOUS-IMPLEMENTATION-STATUS.md", "CANDIDATE-MANIFEST.json",
-              "LINUX-LOGIN-REVIEW.md", "FINGER-JOINT-IDENTITY.md"}
+ROOT_FILES = {"HaloMCCVRLauncher.exe", "README.txt", "RELEASE-NOTES.md", "CANDIDATE-MANIFEST.json"}
 
 
 def require(condition: bool, message: str) -> None:
@@ -115,13 +112,26 @@ def config_values(data: bytes) -> dict[str, str]:
     return result
 
 
+# A VR Mappings input as halomccvr.cfg writes it (vr_mapping::FormatInput): up to two held controls, then the press, each
+# a vr_mapping::Source number, and " toggle" for a toggle.
+SOURCE_COUNT = 22
+INPUT_PATTERN = re.compile(r"(\d+\+){0,2}\d+( toggle)?")
+
+
+def valid_input(value: str) -> bool:
+    return (INPUT_PATTERN.fullmatch(value) is not None and
+            all(int(part) < SOURCE_COUNT for part in value.removesuffix(" toggle").split("+")))
+
+
 def check_config(data: bytes) -> int:
     values = config_values(data)
+    # From vr_inputs_version 3 the file names only the rows that differ from the default controls; a row it names must
+    # be a valid input.
+    require(values.get("vr_inputs_version") == "3", "The packaged config must be vr_inputs_version 3")
     for title in TITLES:
         for action in ACTIONS:
             key = f"vr_bind_{title}_{action}"
-            require(key in values and values[key].isdigit() and 0 <= int(values[key]) < 16,
-                    f"Missing or invalid per-game binding: {key}")
+            require(key not in values or valid_input(values[key]), f"Invalid per-game binding: {key}")
         key = f"hide_muzzle_flash_{title}"
         require(values.get(key) in ("0", "1"), f"Missing per-game muzzle-flash setting: {key}")
         key = f"bloom_enabled_{title}"
@@ -129,7 +139,11 @@ def check_config(data: bytes) -> int:
     for key in ("virtual_stock", "virtual_stock_proximity_release",
                 "vr_action_mapping", "flashlight_suppress_on_two_hand", "physical_crouch"):
         require(values.get(key) in ("0", "1"), f"Missing boolean config setting: {key}")
-    require(values["physical_crouch"] == "0", "Optional physical crouch must default off")
+    require(values.get("coop_safe_shots") in ("0", "1", "2"), "Missing config setting: coop_safe_shots")
+    require(values["physical_crouch"] == "1", "Physical crouch must default on")
+    require(values["coop_safe_shots"] == "2", "Co-op safe shots must default to automatic")
+    require(values.get("coop_safe_shots_version") == "2",
+            "The packaged config must say its co-op safe shots value is a chosen one")
     require(values["virtual_stock"] == "0", "Optional virtual stock must default off")
     for key, low, high in (
         ("virtual_stock_standard_strength", 0, 1),
@@ -159,7 +173,7 @@ def check_build(path: Path, commit: str) -> dict:
         require(metadata.get("schema_version") == 56 and metadata.get("payload_directory") == "ModFiles",
                 "Unexpected candidate manifest schema or layout")
         require(metadata.get("source_commit") == commit and metadata.get("accepted") is False and
-                metadata.get("status") == "UNTESTED_LOCAL_CANDIDATE", "Candidate source/status mismatch")
+                metadata.get("status") == "RELEASE_CANDIDATE", "Candidate source/status mismatch")
         require(set(metadata.get("files", {})) == set(listed), "Candidate file table and install manifest disagree")
         for name, expected in listed.items():
             data = archive.read("ModFiles/" + name)
@@ -175,17 +189,24 @@ def check_build(path: Path, commit: str) -> dict:
         require(launcher_metadata.get("bytes") == len(launcher) and
                 str(launcher_metadata.get("sha256", "")).lower() == sha256(launcher),
                 "Separate launcher identity does not match candidate manifest")
-        require(re.search(rb"requestedExecutionLevel\b[^>]*level\s*=\s*[\"']requireAdministrator[\"']", launcher),
-                "Launcher does not embed the required administrator manifest")
+        # The launcher must not ask for administrator rights: the game inherits its token, and an elevated game
+        # ignores an OpenXR runtime chosen with XR_RUNTIME_JSON.
+        require(re.search(rb"requestedExecutionLevel\b[^>]*level\s*=\s*[\"']asInvoker[\"']", launcher),
+                "Launcher manifest must be asInvoker (it must not ask for administrator rights)")
+        # The launcher's unattended launch (--headless, no menu and no dialogs) is a dev-only test hook.
+        require("--headless".encode("utf-16-le") not in launcher,
+                "Packaged launcher contains the dev-only --headless hook (HALOMCCVR_DEV_DIAGNOSTICS must be OFF)")
+        # The flat probe's launch (--flat-probe, HaloMCCFlatProbe.dll alone, MCC flat) is a dev-only measurement hook.
+        require("--flat-probe".encode("utf-16-le") not in launcher,
+                "Packaged launcher contains the dev-only --flat-probe hook (HALOMCCVR_DEV_DIAGNOSTICS must be OFF)")
         dll = archive.read("ModFiles/HaloMCCVR.dll")
         require(commit.encode("ascii") + b"\0" in dll and commit.encode("ascii") + b"-dirty" not in dll,
                 "Packaged DLL does not embed the exact clean source commit")
-        for name in ("RELEASE-NOTES.md", "IMPLEMENTATION-STATUS.md", "PREVIOUS-IMPLEMENTATION-STATUS.md",
-                     "LINUX-LOGIN-REVIEW.md", "FINGER-JOINT-IDENTITY.md"):
+        for name in ("RELEASE-NOTES.md",):
             require(archive.read(name) == archive.read("ModFiles/" + name), f"Root/payload notes differ: {name}")
         identity = config_values(archive.read("ModFiles/BUILD-IDENTITY.txt"))
-        require(identity.get("source_commit") == commit and identity.get("release_tag") == "" and
-                identity.get("build_kind") == "UNTESTED_LOCAL_CANDIDATE", "Launcher build identity mismatch")
+        require(identity.get("source_commit") == commit and identity.get("release_tag") == "RC-" + commit[:7] and
+                identity.get("build_kind") == "RELEASE_CANDIDATE", "Launcher build identity mismatch")
         require(listed["nvngx_dlss.dll"] == DLSS_SHA256, "NVIDIA runtime is not the pinned release DLL")
         analyser = archive.read("ModFiles/TelemetryAnalyser/analyse_mccvr_telemetry.py")
         require(len(analyser) == 395283 and sha256(analyser) == ANALYSER_SHA256,
@@ -213,6 +234,19 @@ def check_manual(path: Path, build_path: Path) -> int:
         for name, original in expected.items():
             require(manual.read(name) == build.read(original),
                     f"Manual ZIP differs from verified installer payload: {name}")
+        return len(files)
+
+
+def check_standalone(path: Path, build_path: Path) -> int:
+    with zipfile.ZipFile(path) as standalone, zipfile.ZipFile(build_path) as build:
+        files = zip_files(standalone)
+        require(set(files) == {"HaloMCCVRLauncher.exe", "README.txt", "LICENSE", "THIRD-PARTY-LICENSES.txt", "OFL-Oxanium.txt"},
+                "Standalone ZIP must contain exactly the launcher, its readme and its licenses")
+        require(standalone.read("HaloMCCVRLauncher.exe") == build.read("HaloMCCVRLauncher.exe"),
+                "Standalone launcher differs from the verified build's")
+        require(b"ANTIVIRUS" in standalone.read("README.txt"), "Standalone readme lacks the antivirus note")
+        require(standalone.read("LICENSE") == build.read("ModFiles/LICENSE"), "Standalone LICENSE differs from the build's")
+        require(b"SIL OPEN FONT LICENSE" in standalone.read("OFL-Oxanium.txt"), "Standalone ZIP lacks the Oxanium OFL license text")
         return len(files)
 
 
@@ -249,6 +283,7 @@ def main() -> int:
     parser.add_argument("build_zip", type=Path)
     parser.add_argument("source_zip", type=Path)
     parser.add_argument("--manual-zip", type=Path)
+    parser.add_argument("--standalone-zip", type=Path)
     parser.add_argument("--commit", default="HEAD")
     parser.add_argument("--repo", type=Path, default=Path(__file__).resolve().parents[1])
     args = parser.parse_args()
@@ -261,6 +296,9 @@ def main() -> int:
         if args.manual_zip:
             report.update(manual_files=check_manual(args.manual_zip, args.build_zip),
                           manual_zip_sha256=file_sha256(args.manual_zip))
+        if args.standalone_zip:
+            report.update(standalone_files=check_standalone(args.standalone_zip, args.build_zip),
+                          standalone_zip_sha256=file_sha256(args.standalone_zip))
         print(json.dumps({"verified": True, **report}, indent=2))
         return 0
     except (OSError, ValueError, KeyError, zipfile.BadZipFile, subprocess.CalledProcessError) as error:

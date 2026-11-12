@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -35,6 +36,16 @@ inline constexpr size_t kHalo3ObjectEntryStride = 0x18;
 inline constexpr uintptr_t kHalo3ObjectEntryDataOffset = 0x10;
 inline constexpr uintptr_t kHalo3ObjectEntryKindOffset = 3;
 inline constexpr uint8_t kHalo3ObjectKindVehicle = 1;
+inline constexpr uint8_t kHalo3ObjectKindGiant = 12;
+// What Halo 3 seats a unit on: a biped (0), a vehicle (1) or a giant (12) -- `1 << kind & 0x1003`, the test the
+// game's own unit camera (+0x17DB83), seat-state check (+0x39A7A9) and collision filter (+0x1FC518) make. A giant
+// (the Scarab, a mod map's walkers) is not a vehicle and the game's unit_in_vehicle (+0x3A36F4) answers false for
+// one, but its seats are seats all the same, in the seat block every unit's definition has at the same place.
+inline constexpr uint32_t kHalo3SeatParentKindMask = 0x1003u;
+inline constexpr bool Halo3IsSeatParentKind(uint8_t kind)
+{
+    return kind < 32 && ((1u << kind) & kHalo3SeatParentKindMask) != 0;
+}
 inline constexpr uintptr_t kHalo3ObjectParentOffset = 0x10;
 inline constexpr uintptr_t kHalo3UnitSeatWordOffset = 0x24E;
 
@@ -1079,6 +1090,11 @@ inline bool Halo3FingerprintIsUnique(float bestDistance, float runnerUpDistance,
     return runnerUpDistance >= separate;
 }
 
+// The largest bounding sphere radius read as a real object's, in world units: a guard against a wrong or garbage
+// read, not a size limit. A mod map's giant flyer is far past the stock vehicles' few units: HugeGrass's Lich has a
+// live sphere of 112.25 wu (342 m), which the old 100 wu limit refused, so its seat never had a frame.
+inline constexpr float kHalo3MaxBoundsRadiusWu = 1000.0f;
+
 // Anchor-frame sanity: the frame origin must sit inside the seated parent's
 // own bounding sphere (+0x1C center / +0x28 radius) plus a margin generous
 // enough for every authored point yet far below any wrong-frame miss (the C6
@@ -1086,7 +1102,7 @@ inline bool Halo3FingerprintIsUnique(float bestDistance, float runnerUpDistance,
 inline bool Halo3AnchorWithinBounds(const float pos[3], const float center[3],
                                     float radius, float margin)
 {
-    if (!std::isfinite(radius) || radius < 0.0f || radius > 100.0f)
+    if (!std::isfinite(radius) || radius < 0.0f || radius > kHalo3MaxBoundsRadiusWu)
         return false;
     float d2 = 0.0f;
     for (int i = 0; i < 3; ++i)
@@ -1098,6 +1114,88 @@ inline bool Halo3AnchorWithinBounds(const float pos[3], const float center[3],
     }
     const float limit = radius + margin;
     return d2 <= limit * limit;
+}
+
+// THE DRAWN ROOT NODE AGAINST THE SIMULATION'S ORIGIN, AT SPEED. A vehicle is drawn between two simulation ticks (a
+// networked one where it was smoothed to), so its drawn root node stands off the simulation's origin by up to what
+// it covers in a tick or two. A world unit holds at rest and at MCC's ground speeds; a flyer boosting in Project
+// Reclaimer stood further off, and the vehicle cameras flipped frame by frame between the drawn and the simulated
+// frame, which is a shake. The reach is a world unit and what 0.1 s covers at the speed the origin moves, along
+// the way it moves only: off that line the root node must still stand within a world unit, so a model whose root
+// sits elsewhere is not taken once it moves fast.
+inline constexpr float kHalo3RootNodeRestReachWu = 1.0f;
+inline constexpr float kHalo3RootNodeLagSeconds = 0.1f;
+inline constexpr float kHalo3RootNodeMaxSpeedWu = 200.0f;
+inline float Halo3RootNodeReachWu(float speedWuPerSecond) noexcept
+{
+    const float speed = std::isfinite(speedWuPerSecond)
+        ? std::clamp(speedWuPerSecond, 0.0f, kHalo3RootNodeMaxSpeedWu) : 0.0f;
+    return kHalo3RootNodeRestReachWu + speed * kHalo3RootNodeLagSeconds;
+}
+
+// The speed of a point that moves in steps, as the simulation's origin does once a tick: each step over the time
+// since the step before. The first step, one after more than half a second, and a point that has not moved for
+// that long are no speed.
+struct Halo3StepSpeed
+{
+    float pos[3]{};
+    float dir[3]{};      // the way the last step went (unit), 0 with no speed
+    double changedAt = 0.0;
+    float speed = 0.0f;
+    bool valid = false;
+};
+inline float Halo3StepSpeedUpdate(Halo3StepSpeed& track, const float pos[3], double nowSeconds) noexcept
+{
+    if (!std::isfinite(nowSeconds) || !std::isfinite(pos[0]) || !std::isfinite(pos[1]) || !std::isfinite(pos[2]))
+        return track.speed = 0.0f;
+    if (!track.valid)
+    {
+        for (int i = 0; i < 3; ++i)
+            track.pos[i] = pos[i];
+        track.changedAt = nowSeconds;
+        track.speed = 0.0f;
+        track.valid = true;
+        return 0.0f;
+    }
+    float d2 = 0.0f;
+    for (int i = 0; i < 3; ++i)
+        d2 += (pos[i] - track.pos[i]) * (pos[i] - track.pos[i]);
+    const double since = nowSeconds - track.changedAt;
+    if (d2 > 0.0f)
+    {
+        const float step = std::sqrt(d2);
+        track.speed = since > 0.0 && since <= 0.5 ? static_cast<float>(step / since) : 0.0f;
+        for (int i = 0; i < 3; ++i)
+        {
+            track.dir[i] = track.speed > 0.0f ? (pos[i] - track.pos[i]) / step : 0.0f;
+            track.pos[i] = pos[i];
+        }
+        track.changedAt = nowSeconds;
+    }
+    else if (since > 0.5)
+    {
+        track.speed = 0.0f;
+        track.dir[0] = track.dir[1] = track.dir[2] = 0.0f;
+    }
+    return track.speed;
+}
+
+// Whether a drawn root node `away` (world units from the simulation's origin) stands in for that origin: within a
+// world unit off the line of motion, and along it within the reach the speed allows (Halo3RootNodeReachWu).
+inline bool Halo3RootNodeWithinReach(const float away[3], const Halo3StepSpeed& track) noexcept
+{
+    float d2 = 0.0f, along = 0.0f;
+    for (int i = 0; i < 3; ++i)
+    {
+        if (!std::isfinite(away[i]))
+            return false;
+        d2 += away[i] * away[i];
+        along += away[i] * track.dir[i];
+    }
+    const float rest = kHalo3RootNodeRestReachWu;
+    const float side2 = d2 - along * along;
+    const float reach = Halo3RootNodeReachWu(track.speed);
+    return side2 <= rest * rest && std::fabs(along) <= reach;
 }
 
 // Frame provenance, published for the probe log so a headset report can be
@@ -1273,11 +1371,11 @@ inline bool Halo3ComposeRollStableFollowBasis(
     return true;
 }
 
-// Dormant algebraic inverse retained from the pre-package Reach reticle draft.
-// The active reticle path deliberately does not use it: it projects world aim
+// Algebraic inverse of the follow basis.
+// Reach's reticle deliberately does not use it: it projects world aim
 // through the final completed compact-camera basis, which already includes
-// pitch trim, View Follow, roll and headset smoothing. Keeping this pure helper
-// tested records the rejected draft's math without putting it on a hot path.
+// pitch trim, View Follow, roll and headset smoothing. The Halo 3 / ODST
+// dev assessment reticle does (Halo3SeatAimToVrReticle, below).
 inline bool Halo3InverseRollStableFollowForward(
     const float worldForward[3], float hullYaw, float hullPitch,
     float gameYawRef, float& outTrackedYawDelta, float& outTrackedPitch)
@@ -1341,6 +1439,52 @@ inline bool Halo3InverseRollStableFollowForward(
         return false;
     outTrackedYawDelta = trackedYawDelta;
     outTrackedPitch = trackedPitch;
+    return true;
+}
+
+// The DEV ASSESSMENT reticle in a seat (honest_reticle_assess = 2): the
+// game's aim (world forward, game axes) expressed back in VR space through the
+// mapping the seat's target came through, as the yaw/pitch the reticle is
+// drawn along. The forward mapping is
+//   delta = yawSign * wrap(vrYaw - headYawRef),  pitch = pitchSign * vrPitch,
+// then the game angles are gameYawRef + delta and pitch, or, in the roll-stable
+// vehicle-follow frame (`followed`), that pair composed into the hull's yaw and
+// PITCH (Halo3ComposeRollStableFollowBasis). Undoing only the flat form in a
+// followed seat leaves the hull pitch on the reticle: on a 20-degree slope the
+// reticle sits ~20 degrees off the gun when it aims over the hood or the tail.
+inline bool Halo3SeatAimToVrReticle(
+    const float aimForward[3], bool followed, float hullYaw, float hullPitch,
+    float gameYawRef, float headYawRef, float yawSign, float pitchSign,
+    float& outVrYaw, float& outVrPitch)
+{
+    if (!aimForward || !std::isfinite(aimForward[0]) ||
+        !std::isfinite(aimForward[1]) || !std::isfinite(aimForward[2]) ||
+        !std::isfinite(gameYawRef) || !std::isfinite(headYawRef) ||
+        !std::isfinite(yawSign) || !std::isfinite(pitchSign))
+        return false;
+    float trackedYawDelta = 0.0f, trackedPitch = 0.0f;
+    if (followed)
+    {
+        if (!Halo3InverseRollStableFollowForward(
+                aimForward, hullYaw, hullPitch, gameYawRef,
+                trackedYawDelta, trackedPitch))
+            return false;
+    }
+    else
+    {
+        const float z = aimForward[2] < -1.0f
+            ? -1.0f
+            : (aimForward[2] > 1.0f ? 1.0f : aimForward[2]);
+        trackedYawDelta = Halo3WrapPi(
+            std::atan2(aimForward[1], aimForward[0]) - gameYawRef);
+        trackedPitch = std::asin(z);
+    }
+    const float vrYaw = headYawRef + yawSign * trackedYawDelta;
+    const float vrPitch = pitchSign * trackedPitch;
+    if (!std::isfinite(vrYaw) || !std::isfinite(vrPitch))
+        return false;
+    outVrYaw = vrYaw;
+    outVrPitch = vrPitch;
     return true;
 }
 
@@ -1515,6 +1659,10 @@ inline constexpr uintptr_t kHalo3DefBlurSpeedOffset = 0x3B4;
 inline constexpr uintptr_t kHalo3VehicleSeatsBlockOffset = 0x258;
 inline constexpr size_t kHalo3VehicleSeatStride = 0xD4;
 inline constexpr uint32_t kHalo3SeatThirdPersonCameraBit = 1u << 4;
+// Seat flags bit 2, `driver`: the seat that drives its vehicle (bit 3 is `gunner`; ODST's kOdstSeatDriverBit is the
+// same bit). Every driver's seat logged in play carries it -- Warthog 0x48014, Elephant 0x10801C, Banshee
+// 0x4080801C, Chopper 0x801C -- and neither of the Elephant's mounted guns does (0x101198, 0x5500018).
+inline constexpr uint32_t kHalo3SeatDriverBit = 1u << 2;
 // Seat flags bit 5, `allows weapons`: the occupant fires their OWN weapon
 // rather than a vehicle barrel. Read straight off the loaded seat record, and
 // confirmed against real Halo 3 values recorded during the ODST O5 work - the
@@ -1612,6 +1760,11 @@ enum class Halo3VehicleId : uint8_t
     // their authored eye points sit within 0.09 wu (27 cm) of each other, so
     // one shared point is within authoring noise for all three.
     StationaryTurret,
+    // The Elephant: tank physics like the Scorpion, told apart by its definition's bounding radius
+    // (kHalo3ElephantBoundingRadiusWu). After every other entry so their numbers stay as they are; it has no
+    // per-seat trim slot (config.h kVehicleTrimNames mirrors the ones before it) and no tuned eye point, so its
+    // seats see from the occupant's head.
+    Elephant,
 };
 
 // Definition-resident fields the sampler resolves ONCE per seat session (on a
@@ -1623,7 +1776,90 @@ struct Halo3DefinitionFields
     float engineMoment = 0.0f;
     bool scoutValid = false;
     int specificType = -1;
+    // The definition's own bounding radius, world units, once the definition has proven it reads as a vehicle's
+    // (Halo3DefinitionRadiusUsable); < 0 = not known.
+    float boundingRadius = -1.0f;
 };
+
+// A PHYSICS TYPE IS A CLASS, NOT A VEHICLE: the Elephant has the Scorpion's tank physics, and a mod map's own
+// vehicles take a stock one's (HugeGrass has flyers that read as Banshees and Hornets). The definition's bounding
+// radius tells them apart -- a value of the vehicle's tag, which damage, riders and attachments never change. The
+// live vehicle's own sphere is NOT that value in Halo 3: measured in play it stands 1.0 to 1.82 times the
+// definition's (Warthog 1.0 against 1.52 wu, Banshee 1.4 against 1.5-1.8), so it is not used.
+//
+// The stock radii, read in play (Halo 3, 2026-10-19, "H3 vehicle definition" log lines): a vehicle its physics reads
+// as one of these whose radius is another is not that vehicle. 0 = not measured: the physics alone decides.
+// The Hornet's is read offline from the stock maps' own vehicle tags (objects\vehicles\hornet\hornet and Avalanche's
+// hornet_lite alike, on every map that has one), the same definition field at +4 that play read for the three above
+// -- and offline those three read exactly what play measured.
+inline constexpr float kHalo3ScorpionBoundingRadiusWu = 2.200f; // 671 cm
+inline constexpr float kHalo3ElephantBoundingRadiusWu = 5.129f; // 1563 cm
+inline constexpr float kHalo3BansheeBoundingRadiusWu = 1.400f;  // 427 cm, the same in two sessions
+inline constexpr float kHalo3HornetBoundingRadiusWu = 2.268f;   // 691 cm
+// The rest of the stock vehicles, read the same way offline from their base tags (and play agrees: Warthog 1.000,
+// Mongoose 0.800, Chopper 1.307). Every stock variant (snow, gauss, troop, anti-air, ...) has its base vehicle's
+// radius. These six serve ONLY Halo3SameSizeStockVehicle: the physics rules above do not compare them, as before.
+inline constexpr float kHalo3WarthogBoundingRadiusWu = 1.000f;  // 305 cm
+inline constexpr float kHalo3MongooseBoundingRadiusWu = 0.800f; // 244 cm
+inline constexpr float kHalo3GhostBoundingRadiusWu = 0.850f;    // 259 cm
+inline constexpr float kHalo3WraithBoundingRadiusWu = 1.800f;   // 549 cm
+inline constexpr float kHalo3MaulerBoundingRadiusWu = 1.435f;   // 437 cm (1.4348 in the tag)
+inline constexpr float kHalo3ChopperBoundingRadiusWu = 1.307f;  // 398 cm (1.30717 in the tag)
+// How far a radius may stand from a measured one, as a fraction of it, and still be that vehicle.
+inline constexpr float kHalo3BoundingRadiusTolerance = 0.05f;
+
+// A stock vehicle's definition radius; 0 for anything else.
+inline float Halo3StockBoundingRadiusWu(Halo3VehicleId id) noexcept
+{
+    switch (id)
+    {
+    case Halo3VehicleId::Scorpion: return kHalo3ScorpionBoundingRadiusWu;
+    case Halo3VehicleId::Elephant: return kHalo3ElephantBoundingRadiusWu;
+    case Halo3VehicleId::Banshee: return kHalo3BansheeBoundingRadiusWu;
+    case Halo3VehicleId::Hornet: return kHalo3HornetBoundingRadiusWu;
+    case Halo3VehicleId::Warthog: return kHalo3WarthogBoundingRadiusWu;
+    case Halo3VehicleId::Mongoose: return kHalo3MongooseBoundingRadiusWu;
+    case Halo3VehicleId::Ghost: return kHalo3GhostBoundingRadiusWu;
+    case Halo3VehicleId::Wraith: return kHalo3WraithBoundingRadiusWu;
+    case Halo3VehicleId::Mauler: return kHalo3MaulerBoundingRadiusWu;
+    case Halo3VehicleId::Chopper: return kHalo3ChopperBoundingRadiusWu;
+    default: return 0.0f;
+    }
+}
+
+inline bool Halo3RadiusMatches(float radiusWu, float measuredWu) noexcept
+{
+    return measuredWu > 0.0f && radiusWu >= 0.0f && std::isfinite(radiusWu) &&
+           std::fabs(radiusWu - measuredWu) <= kHalo3BoundingRadiusTolerance * measuredWu;
+}
+
+// The definition's radius is only taken when the definition opens as a vehicle's does: its object type (the int16
+// two fields before the radius) is the vehicle type, and the radius is a size a vehicle can have (measured: 0.8 wu
+// for a turret to 1.4 for the Banshee). That is the proof that the field read is the bounding radius on this build.
+inline bool Halo3DefinitionRadiusUsable(int objectType, float radiusWu) noexcept
+{
+    return objectType == kHalo3ObjectKindVehicle && std::isfinite(radiusWu) && radiusWu >= 0.1f && radiusWu <= 30.0f;
+}
+
+// Is a vehicle the stock one its physics reads as? Yes when its radius is the stock one's, and when either radius is
+// unknown (not proven, or not measured): with nothing to compare, the physics decides as it always has.
+inline bool Halo3StockRadiusFits(float boundingRadiusWu, float stockRadiusWu) noexcept
+{
+    if (!(stockRadiusWu > 0.0f) || !(boundingRadiusWu >= 0.0f))
+        return true;
+    return Halo3RadiusMatches(boundingRadiusWu, stockRadiusWu);
+}
+
+// A tank: the Scorpion or the Elephant by its radius; another tank is one the mod does not know. Unproven: the
+// Scorpion, as before.
+inline Halo3VehicleId Halo3ResolveTank(float boundingRadiusWu) noexcept
+{
+    if (!(boundingRadiusWu >= 0.0f) || Halo3RadiusMatches(boundingRadiusWu, kHalo3ScorpionBoundingRadiusWu))
+        return Halo3VehicleId::Scorpion;
+    if (Halo3RadiusMatches(boundingRadiusWu, kHalo3ElephantBoundingRadiusWu))
+        return Halo3VehicleId::Elephant;
+    return Halo3VehicleId::Unknown;
+}
 
 // Tolerances are wide enough for any float representation of the authored
 // constant and far narrower than the gap between the two authored values
@@ -1637,9 +1873,13 @@ inline Halo3VehicleId Halo3ResolveVehicleId(const Halo3DefinitionFields& def)
 {
     switch (def.physicsType)
     {
-    case 0: return Halo3VehicleId::Scorpion;      // human_tank
-    case 4: return Halo3VehicleId::Banshee;       // alien_fighter
-    case 7: return Halo3VehicleId::Hornet;        // vtol
+    case 0: return Halo3ResolveTank(def.boundingRadius); // human_tank: the Scorpion, or the Elephant
+    case 4:                                        // alien_fighter: the Banshee, or a mod's own flyer
+        return Halo3StockRadiusFits(def.boundingRadius, kHalo3BansheeBoundingRadiusWu) ? Halo3VehicleId::Banshee
+                                                                                         : Halo3VehicleId::Unknown;
+    case 7:                                        // vtol: the Hornet, or a mod's own flyer
+        return Halo3StockRadiusFits(def.boundingRadius, kHalo3HornetBoundingRadiusWu) ? Halo3VehicleId::Hornet
+                                                                                        : Halo3VehicleId::Unknown;
     case 8: return Halo3VehicleId::Chopper;       // chopper
     case 1:                                        // human_jeep
         if (!def.jeepValid || !std::isfinite(def.engineMoment))
@@ -1661,6 +1901,140 @@ inline Halo3VehicleId Halo3ResolveVehicleId(const Halo3DefinitionFields& def)
     default:
         return Halo3VehicleId::Unknown;            // incl. 5 (turret)
     }
+}
+
+// THE STOCK VEHICLES BY TAG PATH. A physics type says what CLASS a vehicle is; its tag path (halo3_tag_names.h) says
+// which vehicle: HugeGrass's Sparrowhawk and Falcon have the Hornet's physics, its Mammoth the Warthog's, its
+// Spectre the Ghost's. This is every vehicle tag of the 38 stock Halo 3 maps whose physics reads as one of the
+// vehicles above, read offline from the maps' tag indices with the definition fields Halo3ResolveVehicleId reads.
+// The stock tags that read as none (the turret guns, which take their carrier's identity, the stationary turrets,
+// the Pelican, the Phantom, the Shade and the props) need no entry: they are Unknown either way.
+struct Halo3StockVehiclePath
+{
+    const char* path;
+    Halo3VehicleId id;
+};
+inline constexpr Halo3StockVehiclePath kHalo3StockVehiclePaths[] = {
+    {"objects\\vehicles\\scorpion\\scorpion", Halo3VehicleId::Scorpion},
+    {"objects\\vehicles\\scorpion\\scorpion_snow", Halo3VehicleId::Scorpion},
+    {"objects\\levels\\multi\\shrine\\behemoth\\behemoth", Halo3VehicleId::Elephant},
+    {"objects\\vehicles\\warthog\\warthog", Halo3VehicleId::Warthog},
+    {"objects\\vehicles\\warthog\\warthog_snow", Halo3VehicleId::Warthog},
+    {"objects\\vehicles\\warthog\\warthog_gauss", Halo3VehicleId::Warthog},
+    {"objects\\vehicles\\warthog\\warthog_gauss_snow", Halo3VehicleId::Warthog},
+    {"objects\\vehicles\\warthog\\warthog_troop", Halo3VehicleId::Warthog},
+    {"objects\\vehicles\\warthog\\warthog_wrecked_turret", Halo3VehicleId::Warthog},
+    {"objects\\vehicles\\mongoose\\mongoose", Halo3VehicleId::Mongoose},
+    {"objects\\vehicles\\mongoose\\mongoose_snow", Halo3VehicleId::Mongoose},
+    {"objects\\vehicles\\ghost\\ghost", Halo3VehicleId::Ghost},
+    {"objects\\vehicles\\ghost\\ghost_snow", Halo3VehicleId::Ghost},
+    {"objects\\vehicles\\wraith\\wraith", Halo3VehicleId::Wraith},
+    {"objects\\vehicles\\wraith\\wraith_anti_air", Halo3VehicleId::Wraith},
+    {"objects\\vehicles\\mauler\\mauler", Halo3VehicleId::Mauler},
+    {"objects\\vehicles\\banshee\\banshee", Halo3VehicleId::Banshee},
+    {"objects\\vehicles\\banshee\\banshee_ambient", Halo3VehicleId::Banshee},
+    {"objects\\vehicles\\hornet\\hornet", Halo3VehicleId::Hornet},
+    {"objects\\levels\\dlc\\sidewinder\\hornet_lite\\hornet_lite", Halo3VehicleId::Hornet},
+    {"objects\\vehicles\\brute_chopper\\brute_chopper", Halo3VehicleId::Chopper},
+};
+
+// What a definition's tag path says, as one byte (the camera thread reads it per tag index): a stock vehicle's
+// Halo3VehicleId, or one of these two.
+inline constexpr uint8_t kHalo3PathNoName = 0xFF;   // no name to go by: the physics and the radius decide alone
+inline constexpr uint8_t kHalo3PathNotStock = 0xFE; // a name that is no stock vehicle's
+
+inline uint8_t Halo3PathVerdict(const char* path, size_t length) noexcept
+{
+    if (!path || !length)
+        return kHalo3PathNoName;
+    const auto lower = [](char c) { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c; };
+    for (const Halo3StockVehiclePath& stock : kHalo3StockVehiclePaths)
+    {
+        size_t i = 0;
+        while (i < length && stock.path[i] && lower(path[i]) == stock.path[i])
+            ++i;
+        if (i == length && !stock.path[i])
+            return static_cast<uint8_t>(stock.id);
+    }
+    return kHalo3PathNotStock;
+}
+
+// Does a definition pass stock vehicle `id`'s physics and radius checks? Where there is nothing to compare (a radius
+// not proven on this build, or not measured) the class decides, as in Halo3ResolveVehicleId -- so the Elephant's
+// path with tank physics is the Elephant even when its radius could not be read.
+inline bool Halo3FitsStockVehicle(const Halo3DefinitionFields& def, Halo3VehicleId id) noexcept
+{
+    switch (id)
+    {
+    case Halo3VehicleId::Scorpion:
+        return def.physicsType == 0 && Halo3StockRadiusFits(def.boundingRadius, kHalo3ScorpionBoundingRadiusWu);
+    case Halo3VehicleId::Elephant:
+        return def.physicsType == 0 && Halo3StockRadiusFits(def.boundingRadius, kHalo3ElephantBoundingRadiusWu);
+    case Halo3VehicleId::Banshee:
+        return def.physicsType == 4 && Halo3StockRadiusFits(def.boundingRadius, kHalo3BansheeBoundingRadiusWu);
+    case Halo3VehicleId::Hornet:
+        return def.physicsType == 7 && Halo3StockRadiusFits(def.boundingRadius, kHalo3HornetBoundingRadiusWu);
+    case Halo3VehicleId::Chopper:
+        return def.physicsType == 8;
+    case Halo3VehicleId::Warthog:
+    case Halo3VehicleId::Mongoose:
+    case Halo3VehicleId::Ghost:
+    case Halo3VehicleId::Wraith:
+    case Halo3VehicleId::Mauler:
+        return Halo3ResolveVehicleId(def) == id;
+    default:
+        return false;
+    }
+}
+
+// THE SAME SIZE AS A STOCK VEHICLE. A tag at a path of its own (a mod's warthog_fast) whose physics read as a stock
+// vehicle AND whose PROVEN definition radius is that vehicle's (Halo3RadiusMatches) is taken for it: its tuned seat
+// points, cameras and steering. Anything else is one the mod does not know: another size (a Spectre has the Ghost's
+// physics at 1.3 wu against 0.85), a radius not proven on this build (it never promotes), or no stock radius.
+inline Halo3VehicleId Halo3SameSizeStockVehicle(const Halo3DefinitionFields& def) noexcept
+{
+    const Halo3VehicleId candidate = Halo3ResolveVehicleId(def);
+    if (candidate == Halo3VehicleId::Unknown || candidate == Halo3VehicleId::StationaryTurret ||
+        !(def.boundingRadius >= 0.0f))
+        return Halo3VehicleId::Unknown;
+    return Halo3RadiusMatches(def.boundingRadius, Halo3StockBoundingRadiusWu(candidate)) ? candidate
+                                                                                          : Halo3VehicleId::Unknown;
+}
+
+// THE RULE WITH NAMES. No name: the physics and the radius, exactly as without names. A stock vehicle's path: that
+// vehicle when its physics and radius agree, else one the mod does not know (a mod map can put another vehicle at a
+// stock path). Any other path: the stock vehicle it is the same size as (Halo3SameSizeStockVehicle), else one the mod
+// does not know -- the Sparrowhawk is not a Hornet, whatever its physics.
+inline Halo3VehicleId Halo3ResolveVehicleIdByPath(const Halo3DefinitionFields& def, uint8_t pathVerdict) noexcept
+{
+    if (pathVerdict == kHalo3PathNoName)
+        return Halo3ResolveVehicleId(def);
+    if (pathVerdict == kHalo3PathNotStock)
+        return Halo3SameSizeStockVehicle(def);
+    if (pathVerdict == static_cast<uint8_t>(Halo3VehicleId::Unknown))
+        return Halo3VehicleId::Unknown;
+    const auto id = static_cast<Halo3VehicleId>(pathVerdict);
+    return Halo3FitsStockVehicle(def, id) ? id : Halo3VehicleId::Unknown;
+}
+
+// What a seat's vehicle is called (Halo3SeatVehicleName): the name its camera file entry, seat memory and note go by.
+enum class Halo3VehicleNameSource : uint8_t
+{
+    Identity,    // the identity's own name ("warthog")
+    Tag,         // its tag's short name ("warthog_fast", "sparrowhawk")
+    Fingerprint, // "custom_" and its tags' fingerprint
+};
+// A stock vehicle (a stock path, or no names to go by) and a stationary turret: the identity's name. A stand-in at a
+// path of its own (a known identity whose path is no stock vehicle's: Halo3SameSizeStockVehicle) keeps its own name,
+// so a variant has its own seat memory and note. One the mod does not know: its tag's name, else its fingerprint.
+inline Halo3VehicleNameSource Halo3SeatNameSource(Halo3VehicleId id, uint8_t pathVerdict, bool haveTagName) noexcept
+{
+    if (id == Halo3VehicleId::StationaryTurret)
+        return Halo3VehicleNameSource::Identity;
+    if (id != Halo3VehicleId::Unknown)
+        return pathVerdict == kHalo3PathNotStock && haveTagName ? Halo3VehicleNameSource::Tag
+                                                                : Halo3VehicleNameSource::Identity;
+    return haveTagName ? Halo3VehicleNameSource::Tag : Halo3VehicleNameSource::Fingerprint;
 }
 
 // User-authored first-person seat points (Blender kit, vehicle/carrier tag
@@ -1784,6 +2158,61 @@ inline constexpr bool Halo3VehicleUsesWheel(Halo3VehicleId id)
         id != Halo3VehicleId::Banshee && id != Halo3VehicleId::Hornet;
 }
 
+// THE CONTROL CLASS: the stock vehicle a vehicle is DRIVEN like, from its physics alone. A vehicle the mod cannot name
+// (a mod map's own) still says in its physics whether it is a tank, a jeep, a flyer or a turret, and its seat's tag
+// says whether a seat drives it; that is all the seat aim policy (seat_drive_policy.h) needs, so such a seat is aimed
+// like the stock seat it is driven like instead of not at all. The class never keys a camera, an eye point or a
+// name: those stay by identity. halo3.dll names the physics blocks in this order: human_tank, human_jeep,
+// human_plane, alien_scout, alien_fighter, turret, mantis, vtol, chopper, guardian; in play the Pelican and the
+// Phantom read as human_plane, the Sparrowhawk as vtol, and the Seraph, the Longsword and HugeGrass's other fighters
+// as alien_fighter.
+inline Halo3VehicleId Halo3ControlClass(const Halo3DefinitionFields& def)
+{
+    switch (def.physicsType)
+    {
+    case 0: return Halo3VehicleId::Scorpion;          // human_tank: the look aims a turret on the hull
+    case 1: return Halo3VehicleId::Warthog;           // human_jeep
+    case 2: return Halo3VehicleId::Hornet;            // human_plane: flown like the vtol
+    case 3:                                           // alien_scout: the Wraith's look aims its mortar
+        if (!def.scoutValid)
+            return Halo3VehicleId::Unknown;
+        return def.specificType == 3 ? Halo3VehicleId::Wraith : Halo3VehicleId::Ghost;
+    case 4: return Halo3VehicleId::Banshee;           // alien_fighter
+    case 5: return Halo3VehicleId::StationaryTurret;  // turret
+    case 7: return Halo3VehicleId::Hornet;            // vtol
+    case 8: return Halo3VehicleId::Chopper;           // chopper
+    default: return Halo3VehicleId::Unknown;          // mantis, guardian, a giant or a biped (no physics block)
+    }
+}
+
+// The seat as the aim policy sees it: whether it drives the vehicle, whether the vehicle turns toward its look, and
+// whether it flies (an aircraft's seat has no turning stop). A named vehicle answers by its identity, as before. A
+// vehicle the mod cannot name answers from its seat's own tag flags (the occupied seat's, as loaded) and its control
+// class; with neither it is a seat that does not drive, whose aim the hand then owns -- every write is still held
+// until the seat proves its record holds the game's aim (seat_drive::StintCheck).
+struct Halo3SeatRole
+{
+    bool driver = false;
+    bool lookSteered = false;
+    bool aircraft = false;
+};
+inline Halo3SeatRole Halo3SeatRoleOf(Halo3VehicleId id, Halo3VehicleId controlClass, int seatIndex, bool mounted,
+                                     uint32_t seatFlags)
+{
+    Halo3SeatRole role;
+    if (id != Halo3VehicleId::Unknown)
+    {
+        role.driver = Halo3SeatIsDriver(id, seatIndex, mounted);
+        role.lookSteered = Halo3VehicleIsLookSteered(id);
+        role.aircraft = id == Halo3VehicleId::Banshee || id == Halo3VehicleId::Hornet;
+        return role;
+    }
+    role.driver = !mounted && (seatFlags & kHalo3SeatDriverBit) != 0;
+    role.lookSteered = Halo3VehicleIsLookSteered(controlClass);
+    role.aircraft = controlClass == Halo3VehicleId::Banshee || controlClass == Halo3VehicleId::Hornet;
+    return role;
+}
+
 // Which seats may take the hull-follow view at all. The hazard the follow
 // creates is specific: if the frame it follows is the same heading the engine's
 // aim channel drives, the closed-loop hand aim loses its feedback and a fixed
@@ -1820,6 +2249,33 @@ inline constexpr bool Halo3SeatFollowsPitch(Halo3VehicleId id, int seatIndex,
     return id != Halo3VehicleId::Banshee && id != Halo3VehicleId::Hornet;
 }
 
+// THE SAME TWO QUESTIONS FOR ANY SEAT WITH A VIEW, a seat with no tuned point included: a vehicle the mod cannot
+// name (a mod map's own) or one it names without one (the Elephant). A tuned seat answers exactly as above. A seat
+// with no tuned point has its view at the occupant's head (`seatEye`), and its view may follow its hull wherever that
+// is safe for the reason above: never on a turret's own frame, and in a driver's seat (`driver`, Halo3SeatRoleOf)
+// only where it is known how the vehicle steers -- by its name, or by its control class (Halo3ControlClass) for one
+// the mod cannot name: a look-steered one has its steering authored as the stock vehicle's is
+// (Halo3SeatRoleAuthorsSteering), a tank's look aims its gun. The driver of a vehicle of no known class (a walker, a
+// giant) keeps the view as it is. An aircraft, by name or by class, keeps the yaw-only follow.
+inline constexpr bool Halo3SeatViewFollowsHull(Halo3VehicleId id, Halo3VehicleId controlClass, bool driver,
+                                               int seatIndex, bool mountedTurret, bool seatEye)
+{
+    if (id == Halo3VehicleId::StationaryTurret)
+        return false;
+    if (Halo3SeatFollowsHull(id, seatIndex, mountedTurret))
+        return true;
+    if (!seatEye || controlClass == Halo3VehicleId::StationaryTurret)
+        return false;
+    return !driver || id != Halo3VehicleId::Unknown || controlClass != Halo3VehicleId::Unknown;
+}
+inline constexpr bool Halo3SeatViewFollowsPitch(Halo3VehicleId id, Halo3VehicleId controlClass, bool driver,
+                                                int seatIndex, bool mountedTurret, bool seatEye)
+{
+    const Halo3VehicleId flown = id != Halo3VehicleId::Unknown ? id : controlClass;
+    return Halo3SeatViewFollowsHull(id, controlClass, driver, seatIndex, mountedTurret, seatEye) &&
+        flown != Halo3VehicleId::Banshee && flown != Halo3VehicleId::Hornet;
+}
+
 // A seat whose weapon is a physically slewing gun rather than the occupant's
 // own: a walk-up emplacement or any mounted gunner. Their aim carries an
 // authored rate cap the closed loop cannot exceed. From H3EK seat blocks,
@@ -1832,17 +2288,31 @@ inline constexpr bool Halo3SeatIsTurret(Halo3VehicleId id, bool mountedTurret)
     return mountedTurret || id == Halo3VehicleId::StationaryTurret;
 }
 
-// The one gate that hands a seat's steering to the wheel/stick author instead
-// of the closed-loop hand aim. It must switch on exactly the same condition
-// that makes the view follow the hull, which is why the follow toggle is an
-// argument: when off nothing rotates, the closed loop still has its
+// The AUTOMATIC rule for handing a seat's steering to the wheel/stick author
+// instead of the closed-loop hand aim: it switches on the same condition that
+// makes the view follow the hull, which is why the follow toggle is an
+// argument. With the toggle off nothing rotates, the closed loop still has its
 // feedback, and every control stays exactly as Alpha 0.3.1 shipped it.
+// vehicle_control_logic.h holds the player's own choice, of which this is the
+// default; with the argument true it answers "is this a look-steered driver?".
 inline constexpr bool Halo3SeatAuthorsSteering(Halo3VehicleId id, int seatIndex,
                                                bool mountedTurret,
                                                bool followEnabled)
 {
     return followEnabled && Halo3SeatIsDriver(id, seatIndex, mountedTurret) &&
         Halo3VehicleIsLookSteered(id);
+}
+
+// Halo3SeatAuthorsSteering and Halo3VehicleUsesWheel for any seat, by its role (Halo3SeatRoleOf): a vehicle the mod
+// cannot name is a look-steered driver's by its seat's driver flag and its control class. A named vehicle's role is
+// its identity's, so for it these answer exactly as those do.
+inline constexpr bool Halo3SeatRoleAuthorsSteering(const Halo3SeatRole& role, bool followEnabled)
+{
+    return followEnabled && role.driver && role.lookSteered;
+}
+inline constexpr bool Halo3SeatRoleUsesWheel(const Halo3SeatRole& role)
+{
+    return role.lookSteered && !role.aircraft;
 }
 
 // The right stick is normally the steering fallback in an authored driver

@@ -115,6 +115,7 @@ bool LegacyClassifyRuntimeWeapon(GameTitle title, uint16_t tag,
 {
     if (!source || !boneMap) return false;
     int count=0, cameraControl=-1, right=-1, left=-1, bodyEnd=-1, slot=0;
+    const ReachFpBodyLayout* reachLayout=nullptr;
     if (title==GameTitle::HaloReach)
     {
         for (const auto& context:g_reachFpInterpolations)
@@ -123,6 +124,7 @@ bool LegacyClassifyRuntimeWeapon(GameTitle title, uint16_t tag,
                 count=context.liveSourceCount;
                 bodyEnd=static_cast<int>(context.layout.paletteBodyNodeCount);
                 cameraControl=context.layout.cameraControlSource;
+                reachLayout=&context.layout;
                 break;
             }
     }
@@ -137,14 +139,22 @@ bool LegacyClassifyRuntimeWeapon(GameTitle title, uint16_t tag,
                 break;
             }
     }
-    if (count<=0 || count>64 || cameraControl<0 || cameraControl>=count) return false;
+    const int capacity=title==GameTitle::HaloReach ? int(kReachFpMaxSourceNodeCount):64;
+    if (count<=0 || count>capacity || cameraControl<0 || cameraControl>=count) return false;
     int nodes=0;
     if (title==GameTitle::HaloReach)
     { if (!ReachResolvePaletteNodeCount(tag,nodes)) return false; }
     else nodes=LegacyAnatomicalRenderNodeCount(title,tag);
-    if (nodes<=0 || nodes>64) return false;
-    int32_t remap[64]{};
+    if (nodes<=0 || nodes>capacity) return false;
+    int32_t remap[kReachFpMaxSourceNodeCount]{};
     if (!SafeReadBytes(boneMap,remap,size_t(nodes)*sizeof(*remap))) return false;
+    if (reachLayout)
+    {
+        // Use this observed model's outputs, never all non-body graph nodes.
+        FpHeldSources held{};
+        return ResolveReachFpHeldSources(*reachLayout,
+            std::span<const int32_t>{remap,size_t(nodes)},held);
+    }
     if (title!=GameTitle::HaloReach)
     {
         struct BodyObservation

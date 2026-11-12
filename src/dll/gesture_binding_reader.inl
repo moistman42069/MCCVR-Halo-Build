@@ -95,3 +95,19 @@ bool GestureReadNativeBindings(const GestureBindingDescriptor& d,uintptr_t state
     __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
 }
 
+// As a level ends, a controller's own row (Halo 3 and Halo 4 seen, just before the load) reads all zero for a moment:
+// every action then names button 0, the left trigger, which no real layout is. That row is being torn down, not read.
+bool GestureRowCleared(const GestureBindingDescriptor& d,uintptr_t state,unsigned controller) noexcept
+{
+    if(d.title==GameTitle::HaloCE||d.title==GameTitle::Halo2||controller>=4) return false;
+    __try
+    {
+        const uintptr_t record=state+controller*d.stride;
+        if(*reinterpret_cast<const unsigned*>(record+d.controllerOffset)!=controller) return false;
+        for(unsigned action=0;action<d.actionCount;++action)
+            if(*reinterpret_cast<const unsigned*>(record+d.remap+action*4)) return false;
+        return true;
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+

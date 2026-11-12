@@ -36,10 +36,11 @@ namespace support_grab
 {
 // Exact pre-fix acceptance values. These are product defaults; changing one
 // is a separate evidence-backed candidate, never a unit-test convenience.
-inline constexpr float kAlongMinimumM = 0.08f;
-inline constexpr float kAlongMaximumM = 0.80f;
+inline constexpr float kAlongMinimumM = 0.12f;
+inline constexpr float kAlongMaximumM = 0.76f;
 inline constexpr float kLateralMaximumM = 0.09f;
-inline constexpr float kZoneRightClampM = 0.10f;
+inline constexpr float kZoneRightMinimumM = -0.02f;
+inline constexpr float kZoneRightMaximumM = 0.18f;
 
 struct SupportGrabZone
 {
@@ -63,7 +64,7 @@ inline virtual_stock::Point3 SupportGrabSample(
 
 // Acquisition zone in the primary controller's frame. `zoneRightM` is the F1
 // side nudge of the zone origin along the primary right vector, clamped to
-// +/- kZoneRightClampM. Non-finite geometry fails closed (inZone = false,
+// to the absolute range around the 0.080 m baseline. Non-finite geometry fails closed (inZone = false,
 // zeroed along/lateral) and never relocates the zone.
 inline SupportGrabZone EvaluateSupportGrabZone(
     virtual_stock::Point3 primaryPosition,
@@ -82,7 +83,7 @@ inline SupportGrabZone EvaluateSupportGrabZone(
         return zone;
 
     const float zoneRight = std::clamp(
-        zoneRightM, -kZoneRightClampM, kZoneRightClampM);
+        zoneRightM, kZoneRightMinimumM, kZoneRightMaximumM);
     if (!std::isfinite(zoneRight))
         return zone;
     const virtual_stock::Point3 sample = SupportGrabSample(

@@ -18,6 +18,8 @@ uint32_t testGeneration=1;
 bool testTracking=true;
 VrContactTrackingSnapshot testRunTracking{};
 uint64_t RoomscaleTestNow() noexcept { return testNow; }
+// The view recenter's frame clock (microseconds), on the same fake time.
+uint64_t RoomscaleTestNowUs() noexcept { return testNow*1000; }
 }
 GameTitle TitleAdapter_GetActiveTitle() { return testTitle; }
 RuntimeMode TitleAdapter_GetRuntimeMode() {return testMode;}
@@ -29,6 +31,7 @@ bool VR_GetContactTrackingSnapshot(VrContactTrackingSnapshot& snapshot)
 
 // Windows headers were already included: replace call sites, not WinAPI declarations.
 #define GetTickCount64 RoomscaleTestNow
+#define ROOMSCALE_NOW_US RoomscaleTestNowUs
 #include "../src/dll/roomscale.cpp"
 #undef GetTickCount64
 
@@ -83,7 +86,10 @@ int RunRoomscaleInputTests()
         check(!Roomscale_Move(x,y),"physical input cancels already-published follow immediately");
         Roomscale_Input(eligible,0,0); testNow+=16; camera();
         x=y=0;
-        check(!Roomscale_Move(x,y),"physical stick release cannot replay old follow demand");
+        // The step owed from before the stick survives it (RoomscaleFollow::Rebase): the camera
+        // derives a fresh demand for it, in the new epoch, rather than replaying the old one.
+        check(Roomscale_Move(x,y) && y>0,
+            "after the physical stick the owed step is followed again, as a fresh demand");
         testNow+=16; head[2]-=0.2f; camera();
         x=y=0; check(Roomscale_Move(x,y),"a fresh physical step resumes body follow");
         body[0]+=0.1f*0.328084f; testNow+=16; camera();
@@ -107,6 +113,90 @@ int RunRoomscaleInputTests()
              RuntimeMode::Cutscene,RuntimeMode::Vehicle,RuntimeMode::Turret,RuntimeMode::Dead,
              RuntimeMode::Unsupported})
             check(!RoomscaleGameplayEligible(title,mode),"roomscale never admits non-gameplay modes");
+    }
+    // THE VIEW RECENTER, through the real camera hook: the title's reference slides toward the head on
+    // its two horizontal axes only, in every title, and only when an option is on and roomscale admits.
+    for (GameTitle title : {GameTitle::HaloCE,GameTitle::Halo2,GameTitle::Halo3,GameTitle::Halo3ODST,
+                           GameTitle::HaloReach,GameTitle::Halo4})
+    for (int law : {1,0})
+    {
+        const int savedLaw=g_config.roomscale_follow_law;
+        g_config.roomscale_follow_law=law;
+        // Every option off to start with (they default on); each is switched on in turn below.
+        g_config.roomscale_recenter_jump=g_config.roomscale_recenter_move_start=g_config.roomscale_recenter_moving=false;
+        testTitle=title; ++testGeneration; testNow+=1000; testTracking=true;
+        const float q[4]{0,0,0,1}, forward[3]{1,0,0};
+        const float scale=0.328084f;
+        float body[3]{0,0,0.6f},head[3]{0,1.7f,0},ref[3]{0,1.62f,0};
+        float stickY=0;
+        const auto frame=[&](bool native=true) {
+            testNow+=11; Roomscale_Input(true,0,stickY);
+            Roomscale_Camera(title,native,body,head,q,forward,ref,scale);
+        };
+        const auto offset=[&]{ return std::hypot(head[0]-ref[0],head[2]-ref[2]); };
+        Roomscale_Input(false,0,0);
+        frame(); frame();
+        // Stick travel with the head 0.3 m off to the side and every option off: the reference stays.
+        head[0]=0.3f; head[2]=0; stickY=0.75f;
+        for (int i=0;i<30;++i) { body[0]+=0.02f*scale; frame(); }
+        check(std::fabs(offset()-0.3f)<1e-5f && ref[1]==1.62f,
+            "recenter off: stick travel leaves the head-to-camera offset alone");
+        // While moving, 0.5 m/s: about 0.1 m in 0.2 s.
+        g_config.roomscale_recenter_moving=true; g_config.roomscale_recenter_moving_speed=0.5f;
+        const float before=offset();
+        for (int i=0;i<18;++i) { body[0]+=0.02f*scale; frame(); }
+        check(std::fabs((before-offset())-0.5f*0.198f)<0.012f,
+            "while moving: the camera hook slides the reference toward the head at the set speed");
+        check(ref[1]==1.62f && std::fabs(ref[2])<1e-6f,
+            "the slide moves the reference along the offset only: not its height, not the other axis");
+        // Standing still afterwards, what the slide left is still owed: the follow asks the body to walk it
+        // (under the threshold law too, which would otherwise take the moved reference for a recenter).
+        stickY=0; for (int i=0;i<20;++i) frame();
+        { float owedX=0,owedY=0;
+          check(Roomscale_Move(owedX,owedY) && std::hypot(owedX,owedY)>0.05f && std::fabs(offset()-(before-0.5f*0.198f))<0.012f,
+              "after the slide, standing still, the legs are still asked to walk what is left (both follow laws)"); }
+        stickY=0.75f; frame();
+        // Not admitted (a seat, a cinematic, third person): nothing moves, and it is counted.
+        const float held=offset();
+        const auto refusedBefore=recenterRefused[size_t(roomscale_recenter::Refusal::NotOnFoot)].load();
+        stickY=0; frame(false); stickY=0.75f;
+        for (int i=0;i<18;++i) frame(false);
+        check(offset()==held && recenterRefused[size_t(roomscale_recenter::Refusal::NotOnFoot)].load()==refusedBefore+1,
+            "not on foot in first person: the recenter refuses, once per stick hold, and the reference stays");
+        // An untracked head refuses too.
+        testTracking=false; stickY=0; frame(); stickY=0.75f;
+        const auto untrackedBefore=recenterRefused[size_t(roomscale_recenter::Refusal::Untracked)].load();
+        for (int i=0;i<10;++i) frame();
+        check(offset()==held && recenterRefused[size_t(roomscale_recenter::Refusal::Untracked)].load()==untrackedBefore+1,
+            "an untracked head: the recenter refuses and the reference stays");
+        testTracking=true;
+        // The start-of-movement blend: 0.2 s to zero from the push.
+        g_config.roomscale_recenter_moving=false;
+        g_config.roomscale_recenter_move_start=true; g_config.roomscale_recenter_move_start_s=0.2f;
+        stickY=0; for (int i=0;i<40;++i) frame();
+        const float left=offset();
+        // Standing still for 0.44 s the follow has been asking the body to come; this fixture's body
+        // does not move, so the offset is what it was.
+        check(std::fabs(left-held)<1e-5f, "fixture: the offset waits while the body does not move");
+        stickY=0.75f;
+        for (int i=0;i<21;++i) { body[0]+=0.02f*scale; frame(); }
+        check(offset()<1e-4f && ref[1]==1.62f,
+            "start of movement: one quick blend brings the reference under the head, height untouched");
+        // The jump blend: the jump action, then the character's eye rising.
+        g_config.roomscale_recenter_move_start=false;
+        g_config.roomscale_recenter_jump=true; g_config.roomscale_recenter_jump_s=0.15f;
+        stickY=0; for (int i=0;i<40;++i) frame();
+        head[0]+=0.02f; head[2]-=0.25f;      // a step forward inside the follow's reach
+        for (int i=0;i<3;++i) frame();
+        const float grounded=offset();
+        check(grounded>0.2f, "fixture: displaced from the character before the jump");
+        for (int i=0;i<10;++i) { body[2]+=0.05f*scale; frame(); }
+        check(offset()==grounded, "rising without the jump action is not a jump: no recenter");
+        const auto takeoffsBefore=recenterTakeoffs.load();
+        for (int i=0;i<24;++i) { Roomscale_JumpInput(i<6); body[2]+=0.05f*scale; frame(); }
+        check(recenterTakeoffs.load()==takeoffsBefore+1 && offset()<1e-4f && ref[1]==1.62f,
+            "a jump: the action and the rising eye start the blend, which lands the reference under the head");
+        g_config.roomscale_recenter_jump=false; g_config.roomscale_follow_law=savedLaw;
     }
     // A stick pulse can begin and end between two native camera callbacks.
     // Its cancellation must retire the old packet even though the camera never
@@ -212,23 +302,24 @@ int RunRoomscaleInputTests()
                 std::fabs(body[0]-allManualDistance+ref[2])<.0001f;
         }
         check(repeatedDebt,"repeated manual/physical cycles preserve accumulated physical travel without baseline drift");
-        // Tracking loss must drop retained debt instead of walking later when
-        // a controller or headset becomes fresh again.
+        // Tracking loss keeps what is owed (dropping it would leave the body wherever the player
+        // had walked away from it, no longer under him). When the headset is fresh again the body
+        // walks the physical step it still owes.
         testNow+=16;Roomscale_Input(true,0,.75f);head[2]-=.2f;camera();
         testTracking=false;Roomscale_Input(true,0,0);camera();
         testTracking=true;Roomscale_Input(true,0,0);camera();
         for(int frame=0;frame<12;++frame)
         {testNow+=16;Roomscale_Input(true,0,0);camera();}
         x=y=0;
-        check(!Roomscale_Move(x,y),"tracking recovery never resumes stale physical debt from manual travel");
+        check(Roomscale_Move(x,y)&&y>0,"tracking recovery resumes the physical step still owed");
         testNow+=16;Roomscale_Input(true,0,.75f);head[2]-=.2f;camera();
-        // There may be no camera or input callback during an interruption.
-        // A fresh poll must not revive debt merely because allowed stays true.
+        // There may be no camera or input callback during an interruption. A stale polling gap ends
+        // the follow in progress; the step it owed is walked once input is fresh again.
         testNow+=120;Roomscale_Input(true,0,0);camera();
         for(int frame=0;frame<12;++frame)
         {testNow+=16;Roomscale_Input(true,0,0);camera();}
         x=y=0;
-        check(!Roomscale_Move(x,y),"fresh input after a stale polling gap drops retained physical debt");
+        check(Roomscale_Move(x,y)&&y>0,"a stale polling gap keeps the physical step still owed");
     }
     // Closed-loop synthetic native walker: physical motion must end up in the
     // body, while body + remaining lean stays exactly one tracked displacement.
@@ -269,14 +360,31 @@ int RunRoomscaleInputTests()
         auto sample=[&]{Roomscale_Camera(testTitle,true,body,head,q,forward,ref,1);};
         sample();testNow+=16;head[2]=-.2f;Roomscale_Input(true,0,0);sample();
         float x=0,y=0;check(Roomscale_Move(x,y),"coasting fixture begins with a delivered command");
-        for(float nativePosition:{.19f,.21f,.23f})
+        for(float nativePosition:{.19f,.21f,.25f})
         {
             testNow+=16;body[0]=nativePosition;Roomscale_Input(true,0,0);sample();
             check(std::fabs(body[0]-head[2]+ref[2]-.2f)<1e-5f,
                 "native stopping travel cannot slide the view away from the physical head");
             x=y=0;Roomscale_Move(x,y);
         }
-        check(y<0,"overshoot requests correction instead of accepting body drift");
+        check(y<0,"an overshoot past the start band (5 cm) requests a correction");
+    }
+    // ...but one inside the start band (2.5 cm) is left alone, like any residual under kFollowStart.
+    {
+        testTitle=GameTitle::Halo3;++testGeneration;testNow+=1000;
+        const float q[4]{0,0,0,1},forward[3]{1,0,0};
+        float body[3]{},head[3]{0,1.7f,0},ref[3]{0,1.7f,0};
+        Roomscale_Input(false,0,0);Roomscale_Input(true,0,0);
+        auto sample=[&]{Roomscale_Camera(testTitle,true,body,head,q,forward,ref,1);};
+        sample();testNow+=16;head[2]=-.2f;Roomscale_Input(true,0,0);sample();
+        float x=0,y=0;check(Roomscale_Move(x,y),"small-overshoot fixture begins with a delivered command");
+        for(float nativePosition:{.19f,.21f,.225f})
+        {
+            testNow+=16;body[0]=nativePosition;Roomscale_Input(true,0,0);sample();
+            x=y=0;Roomscale_Move(x,y);
+        }
+        check(std::fabs(body[0]-head[2]+ref[2]-.2f)<1e-5f && x==0 && y==0,
+            "a 2.5 cm overshoot is consumed and left uncommanded");
     }
     // The same title's engine callbacks can migrate threads. A global tracking
     // reference must not be paired with separate per-thread feedback histories.
@@ -355,6 +463,23 @@ int RunRoomscaleInputTests()
     for (GameTitle title : {GameTitle::None,GameTitle::Unknown})
         check(!RoomscaleGameplayEligible(title,RuntimeMode::Gameplay),
             "roomscale cannot acquire an unsupported title");
+    // Every title has roomscale: CE's body following follows the same saved setting as the others.
+    check(RoomscaleGameplayEligible(GameTitle::HaloCE,RuntimeMode::Gameplay),"CE is eligible for roomscale");
+    {
+        testTitle=GameTitle::HaloCE; ++testGeneration; testNow+=1000;
+        Roomscale_Input(false,0,0);
+        const float q[4]{0,0,0,1},forward[3]{1,0,0};
+        float body[3]{},head[3]{0,1.7f,0},ref[3]{0,1.7f,0};
+        bool ceMoved=false;
+        for (int sample=0;sample<3;++sample) {
+            Roomscale_Input(RoomscaleGameplayEligible(testTitle,RuntimeMode::Gameplay),0,0);
+            Roomscale_Camera(testTitle,true,body,head,q,forward,ref,0.328084f);
+            float x=0,y=0;
+            if (Roomscale_Move(x,y)&&(x!=0||y!=0)) ceMoved=true;
+            testNow+=16; head[2]-=0.2f;
+        }
+        check(ceMoved,"CE roomscale follows a physical step with the saved setting enabled");
+    }
     // CE still requires independent on-foot native camera proof; a saved option
     // and fresh physical motion cannot grant it on their own.
     testTitle=GameTitle::HaloCE; ++testGeneration; testNow+=1000;
@@ -431,5 +556,56 @@ int RunRoomscaleInputTests()
     Roomscale_Camera(testTitle,true,ceBody,ceHead,ceOrientation,ceForward,ceReference,.328084f);
     check(!PhysicalRunning_Move(rx,ry),"reload/holster grip ownership suppresses arm-swing locomotion");
     g_config.physical_running=savedRun;g_config.physical_running_speed=savedSpeed;
+
+    // THE ADMISSION VERDICT (roomscale_admission_logic.h). A refusal stops the follow whatever its reason and is
+    // counted under that reason; the first admitted frame of the next title re-arms it with nothing carried over
+    // (several titles in one MCC session, e.g. ODST -> Halo 3).
+    {
+        using roomscale_admission::Refusal;
+        const bool savedRoomscale=g_config.roomscale_movement;
+        g_config.roomscale_movement=true;
+        const float q[4]{0,0,0,1}, forward[3]{1,0,0};
+        const auto walk=[&](GameTitle title,const roomscale_admission::Verdict& verdict,float step,float& x,float& y) {
+            testTitle=title; ++testGeneration; testNow+=1000; testTracking=true; testMode=RuntimeMode::Gameplay;
+            float body[3]{},head[3]{0,1.7f,0},ref[3]{0,1.7f,0};
+            Roomscale_Input(true,0,0);
+            Roomscale_Camera(title,verdict,body,head,q,forward,ref,0.328084f);
+            testNow+=16; head[2]=-step; Roomscale_Input(true,0,0);
+            Roomscale_Camera(title,verdict,body,head,q,forward,ref,0.328084f);
+            x=y=0;
+            return Roomscale_Move(x,y);
+        };
+        for (auto& counter:admissionRefused) counter.store(0);
+        float x=0,y=0;
+        check(walk(GameTitle::Halo3ODST,Roomscale_Refuse(Refusal::None),0.2f,x,y) && y>0,
+            "an admitted verdict walks the body (ODST)");
+        // A title that refuses for want of a view model (an unarmed Halo 3 player with no camera rung).
+        check(!walk(GameTitle::Halo3,Roomscale_Refuse(Refusal::NoFirstPersonModel),0.2f,x,y),
+            "a refused verdict issues no follow command");
+        check(admissionRefused[size_t(Refusal::NoFirstPersonModel)].load()==2 &&
+              admissionRefused[size_t(Refusal::Seated)].load()==0,
+            "the refusal is counted under the reading that refused, once per camera frame");
+        check((admissionLastRungs.load()>>16)==unsigned(GameTitle::Halo3) &&
+              ((admissionLastRungs.load()>>8)&0xFFu)==unsigned(Refusal::NoFirstPersonModel),
+            "the last refusal remembers its title and reason for the report");
+        // ... and after it: the same title, admitted, walks at once.
+        check(walk(GameTitle::Halo3,Roomscale_Refuse(Refusal::None),0.2f,x,y) && y>0,
+            "the title that refused walks again on its first admitted frames");
+        // Back and forth between titles: each switch starts over and re-arms.
+        check(walk(GameTitle::HaloReach,Roomscale_Refuse(Refusal::None),0.2f,x,y) && y>0 &&
+              walk(GameTitle::Halo3,Roomscale_Refuse(Refusal::None),0.2f,x,y) && y>0,
+            "switching titles in one session re-arms the follow each time");
+        check(errorLastMm.load()<1000 && recenterOffsetMm.load()<1000,
+            "the report's 'now' numbers are the active title's");
+        // The bare yes / no overload is the same call.
+        float body[3]{},head[3]{0,1.7f,0},ref[3]{0,1.7f,0};
+        for (auto& counter:admissionRefused) counter.store(0);
+        Roomscale_Camera(testTitle,false,body,head,q,forward,ref,0.328084f);
+        check(admissionRefused[size_t(Refusal::Unspecified)].load()==1, "a bare 'not allowed' is counted as the caller's");
+        // The status tick drains the window's counters (the line itself is roomscale_admission::FormatRefusals).
+        testNow+=5000; Roomscale_Report();
+        check(admissionRefused[size_t(Refusal::Unspecified)].load()==0, "the report starts a new window");
+        g_config.roomscale_movement=savedRoomscale;
+    }
     return failures;
 }

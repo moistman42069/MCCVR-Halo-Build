@@ -1,3 +1,4 @@
+#include "game_tls.h"
 // Halo 3's authored firing recoil is nested in the damage-response worker.
 // The worker also performs visual effects, so this adapter retires only its
 // exact newly written vibration slot after a private copy was staged.
@@ -93,7 +94,7 @@ bool Halo3WeaponHapticQueue(uint32_t user, uint8_t*& queue) noexcept
 {
     queue = nullptr;
     if (user >= 4 || !g_engineTlsIndex || *g_engineTlsIndex >= 0x200) return false;
-    auto** slots = reinterpret_cast<void**>(__readgsqword(0x58));
+    auto** slots = reinterpret_cast<void**>(HALOMCCVR_GAME_TLS_ARRAY());
     if (!slots) return false;
     const auto* tls = static_cast<const uint8_t*>(slots[*g_engineTlsIndex]);
     if (!tls) return false;
@@ -131,7 +132,7 @@ __declspec(noinline) void __fastcall Halo3WeaponHapticShotDetour(uint32_t weapon
     const auto previous = g_halo3WeaponHapticSource;
     Halo3WeaponHapticSource captured{};
     volatile bool sourceReadFault = false;
-    const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+    const uintptr_t caller = HALOMCCVR_GAME_RETURN_ADDRESS();
     __try
     {
         __try
@@ -161,8 +162,23 @@ __declspec(noinline) void __fastcall Halo3WeaponHapticShotDetour(uint32_t weapon
     }
 }
 
+// Reuse the admitted per-weapon simulation tick, independently of recoil
+// settings/voice state. Native reload requests never run on the XR thread.
+void Halo3DualShakeTick(uint32_t weapon) noexcept
+{
+    if(!g_config.dual_wield_shake_reload||!g_halo3PlayerUnitGetter||!g_halo3UnitInVehicle)return;
+    __try {
+        const uint32_t unit=g_halo3PlayerUnitGetter(0);
+        uint32_t weapons[2]{};
+        if(unit!=UINT32_MAX&&!g_halo3UnitInVehicle(int32_t(unit))&&
+            Halo3ReadOwnedDualWeapons(unit,weapons)&&weapon==weapons[0])
+            VR_DualWieldObserveOwner(GameTitle::Halo3,g_halo3RuntimeGeneration.load(),unit,weapons);
+    } __except(EXCEPTION_EXECUTE_HANDLER) { /* Unknown ownership leaves native controls untouched. */ }
+}
+
 __declspec(noinline) uint8_t __fastcall Halo3WeaponHapticTriggerUpdateDetour(uint32_t weapon)
 {
+    Halo3HookCalled(Halo3Hook::WeaponTriggerUpdate);
     auto& feature = g_halo3WeaponHaptics;
     feature.callbacks.fetch_add(1, std::memory_order_acq_rel);
     const auto previousSource = g_halo3WeaponHapticSource;
@@ -189,6 +205,9 @@ __declspec(noinline) uint8_t __fastcall Halo3WeaponHapticTriggerUpdateDetour(uin
         uint8_t result = 0;
         if (feature.triggerUpdateOriginal)
             result = reinterpret_cast<Halo3WeaponTriggerUpdateFn>(feature.triggerUpdateOriginal)(weapon);
+        // Disabled after the headset test: this weapon callback can stop at
+        // idle, so it cannot supply continuous shake-owner receipts.
+        if constexpr(false) Halo3DualShakeTick(weapon);
         return result;
     }
     __finally
@@ -205,7 +224,7 @@ __declspec(noinline) void __fastcall Halo3WeaponHapticDamageWrapperDetour(
     auto& feature = g_halo3WeaponHaptics;
     feature.callbacks.fetch_add(1, std::memory_order_acq_rel);
     const bool previous = g_halo3WeaponHapticFireEffectScope;
-    const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+    const uintptr_t caller = HALOMCCVR_GAME_RETURN_ADDRESS();
     const auto source = g_halo3WeaponHapticSource;
     g_halo3WeaponHapticFireEffectScope = source.valid && owner == source.owner &&
         datum != UINT32_MAX && Halo3WeaponHapticIsOwnerEffectCaller(feature.base, caller);
@@ -228,7 +247,7 @@ __declspec(noinline) void __fastcall Halo3WeaponHapticEffectDetour(uint32_t owne
     auto& feature = g_halo3WeaponHaptics;
     feature.callbacks.fetch_add(1, std::memory_order_acq_rel);
     const bool previous = g_halo3WeaponHapticFireEffectScope;
-    const uintptr_t caller = reinterpret_cast<uintptr_t>(_ReturnAddress());
+    const uintptr_t caller = HALOMCCVR_GAME_RETURN_ADDRESS();
     g_halo3WeaponHapticFireEffectScope =
         (previous && caller == feature.base + halo3_haptic_contract::wrapper_player_effect_return) ||
         (g_halo3WeaponHapticChargeEffectScope &&
@@ -425,7 +444,7 @@ __declspec(noinline) void __fastcall Halo3WeaponHapticWorkerDetour(uint32_t owne
     __try
     {
         Halo3WeaponHapticWorkerBody(owner,user,datum,fourth,fifth,sixth,scale,
-            eighth,reinterpret_cast<uintptr_t>(_ReturnAddress()));
+            eighth,HALOMCCVR_GAME_RETURN_ADDRESS());
     }
     __finally { feature.callbacks.fetch_sub(1, std::memory_order_release); }
 }
@@ -511,8 +530,8 @@ void Halo3WeaponHapticsTick(float dt) noexcept
             { voice = {}; continue; }
             float low = 0, high = 0;
             if (!halo3_haptics::Sample(voice,
-                    reinterpret_cast<halo3_haptics::CurveFunction>(
-                        feature.base + halo3_haptic_contract::haptic_curve), low, high))
+                    lifted::Callable(reinterpret_cast<halo3_haptics::CurveFunction>(
+                        feature.base + halo3_haptic_contract::haptic_curve)), low, high))
             { voice = {}; continue; }
             const unsigned slot = voice.slot;
             lowSum[slot] += low;
@@ -555,6 +574,7 @@ void Halo3WeaponHapticsTick(float dt) noexcept
 
 __declspec(noinline) void __fastcall Halo3WeaponHapticUpdateDetour(float dt)
 {
+    Halo3HookCalled(Halo3Hook::HapticUpdate);
     auto& feature = g_halo3WeaponHaptics;
     feature.callbacks.fetch_add(1, std::memory_order_acq_rel);
     const bool previousObserved = g_halo3WeaponHapticEvalObserved;
@@ -678,9 +698,11 @@ bool InstallHalo3WeaponHaptics(uintptr_t base, size_t size, uint32_t generation)
     for (auto target : {feature.weaponTarget,feature.triggerUpdateTarget,feature.wrapperTarget,feature.playerEffectTarget,feature.workerTarget,
             feature.evaluatorTarget,feature.updateTarget})
     {
-        if (MH_EnableHook(target) != MH_OK)
+        if (MCCVR_EnableHook(target) != MH_OK)
         { LOG("Halo 3 weapon haptics StockFallback: hook enable failed"); (void)RemoveHalo3WeaponHaptics(); return false; }
     }
+    Halo3HookWatchInstalled(Halo3Hook::WeaponTriggerUpdate, reinterpret_cast<uintptr_t>(feature.triggerUpdateTarget));
+    Halo3HookWatchInstalled(Halo3Hook::HapticUpdate, reinterpret_cast<uintptr_t>(feature.updateTarget));
     feature.enabled.store(true, std::memory_order_release);
     LOG("Halo 3 authored weapon haptics installed: admitted shots plus exact local charge effects, per-weapon role, stock evaluator admission");
     return true;
