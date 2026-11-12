@@ -1605,6 +1605,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "mono_rendering")) { g_config.mono_rendering = atoi(val) != 0; continue; }
         if (!strcmp(key, "aim_frame_zoom")) { g_config.aim_frame_zoom = atoi(val) != 0; continue; }
         if (!strcmp(key, "aim_frame_stereo")) { g_config.aim_frame_stereo = atoi(val) != 0; continue; }
+        if (!strcmp(key, "halo2_camera_shake")) { g_config.halo2_camera_shake = atoi(val) != 0; continue; }
         if (!strcmp(key, "aim_frame_3d_strength")) { g_config.aim_frame_3d_strength = (float)atof(val); continue; }
         if (!strcmp(key, "aim_frame_size_deg_1")) { g_config.aim_frame_size_deg[0] = (float)atof(val); continue; }
         if (!strcmp(key, "aim_frame_size_deg_2")) { g_config.aim_frame_size_deg[1] = (float)atof(val); continue; }
@@ -2801,6 +2802,9 @@ void ConfigSave()
     fprintf(f, "# (default %d)\n", d.halo2_gamepad_graphics_switch ? 1 : 0);
     fprintf(f, "halo2_gamepad_graphics_switch = %d\n\n",
             g_config.halo2_gamepad_graphics_switch ? 1 : 0);
+    fprintf(f, "# Halo 2: the game's camera shake from firing, damage and explosions in the headset view.\n");
+    fprintf(f, "# (default %d)\n", d.halo2_camera_shake ? 1 : 0);
+    fprintf(f, "halo2_camera_shake = %d\n\n", g_config.halo2_camera_shake ? 1 : 0);
     fprintf(f, "# Hold this controller next to your head to use the left stick as D-pad:\n");
     fprintf(f, "# 0 = left controller, 1 = right controller.\n");
     fprintf(f, "# While held, clicking the left stick presses the controller's\n");

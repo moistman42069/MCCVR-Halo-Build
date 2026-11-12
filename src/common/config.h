@@ -730,6 +730,11 @@ struct Config
     // the renderer mid-game; 1 = pass it through as the game expects.
     bool halo2_gamepad_graphics_switch = false;
 
+    // Halo 2 only: the game's camera shake, from a weapon's fire animation and from damage, explosions and weapon
+    // effects (halo2_camera_shake_logic.h). 0 = the headset view keeps still, as Halo 3's always does; 1 = the
+    // game's own shake.
+    bool halo2_camera_shake = false;
+
     // Which controller, held next to the head, turns the left stick into the
     // D-pad (UEVR-style gesture): 0 = left controller, 1 = right controller.
     int dpad_hand = 0;
