@@ -1296,6 +1296,10 @@ namespace
         }
         ImGui::TextDisabled("Raw by default. Try 5%% only for micro-jitter; capped at 10%% for comfort.");
         ImGui::Spacing();
+        changed |= ImGui::Checkbox("Halo 2 camera shake##headmotion", &g_config.halo2_camera_shake);
+        ImGui::TextDisabled("OFF (default): your view keeps still when you fire or something explodes, as in the "
+                            "other games. ON: Halo 2's own camera shake.");
+        ImGui::Spacing();
         ImGui::Separator();
         }
         if (SectionHeader("Sound##section", ImGuiTreeNodeFlags_None))

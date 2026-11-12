@@ -13,6 +13,7 @@ int RunDirectorCameraTests();
 #include "../src/common/halo4_runtime_weapon_bounds.h"
 #include "../src/common/legacy_runtime_weapon_bounds.h"
 #include "../src/common/halo2_snap_turn_logic.h"
+#include "../src/common/halo2_camera_shake_logic.h"
 #include "../src/common/halo2_vehicle_view.h"
 #include "../src/common/halo2_foot_view.h"
 #include "../src/common/halo2_datum_logic.h"
@@ -11051,6 +11052,18 @@ int main()
                       Halo2SaberViewTargetSlot(0, 1, 0) == 4 && Halo2SaberViewTargetSlot(2, 2, 1) == 12 &&
                       Halo2SaberViewTargetSlot(0, -1, 0) == UINT64_MAX,
                 "the view-target draw reads slot offset + half*2 + group*4 (Outskirts' load faulted on one)");
+            {
+                namespace shake = halo2_camera_shake;
+                Check(shake::PatternByte(shake::kCallSitesPattern, shake::kAnimationCameraCallOffset) == 0xE8 &&
+                          shake::PatternByte(shake::kCallSitesPattern, shake::kScreenShakeCallOffset) == 0xE8 &&
+                          shake::kCallSitesRva + shake::kAnimationCameraCallOffset == 0x6F02B1 &&
+                          shake::kCallSitesRva + shake::kScreenShakeCallOffset == 0x6F02DD &&
+                          shake::PatternByte(shake::kCallSitesPattern, shake::kAnimationCameraCallOffset + 1) == -1,
+                      "Halo 2's camera shake: the call-site pattern names both calls of the observer transform");
+                Check(shake::PatternByte(shake::kAnimationCameraPattern, 0) == 0x48 &&
+                          shake::PatternByte(shake::kScreenShakePattern, 0) == 0x48 && shake::kMatrixBytes == 13 * 4,
+                      "Halo 2's camera shake: both routines' entries are pinned; the matrix is real_matrix4x3");
+            }
             float a[16]{1,0,0,0, 0,1,0,0, 0,0,1,0, 1.0f,2.0f,3.0f,1};
             float b[16]{1,0,0,0, 0,1,0,0, 0,0,1,0, 1.0f,2.0f,3.0f,1};
             Check(Halo2SaberViewMatricesMatch(a, b, 2.0e-3f, 0.02f),

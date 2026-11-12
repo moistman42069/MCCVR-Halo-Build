@@ -5053,6 +5053,7 @@ namespace
     #include "halo2_impact_witness.inl"
     #include "halo2_weapon_haptics.inl"
     #include "halo2_haptic_lifecycle.inl"
+    #include "halo2_camera_shake.inl"
 
     // The projectile's own collision flags (g_halo2SightProjectileFlags, above), read from the flight wrapper's
     // call. Cold path, once per install. nullptr = resolved (`flags` set); otherwise why not, and `flags` is
@@ -5480,6 +5481,8 @@ namespace
         }
         if (!RemoveHalo2WeaponHaptics())
         {LOG("Halo 2 weapon haptics CleanupRequired: native callbacks retained");return false;}
+        if (!RemoveHalo2CameraShake())
+        {LOG("Halo 2 camera shake CleanupRequired: native callbacks retained");return false;}
         if (!RemoveHalo2DualAim())
             return false;
         if (!RemoveHalo2WorldCollision())
@@ -6719,6 +6722,7 @@ namespace
         (void)InstallHalo2ContactMelee(base, size, generation);
         (void)InstallHalo2DualAim(base, size);
         (void)InstallHalo2WeaponHaptics(base, size);
+        (void)InstallHalo2CameraShake(base, size);
 
         // Optional feature transaction: refusal here leaves the proven camera,
         // stereo, input and hand paths installed and loudly retains stock
@@ -6758,6 +6762,7 @@ namespace
         ReportHalo2ContactMelee();
         ReportHalo2Drive();
         ReportHalo2WeaponHaptics();
+        ReportHalo2CameraShake();
         ReportHalo2FireEye();
 #if HALOMCCVR_DEV_DIAGNOSTICS
         ReportHalo2AsSeen();
