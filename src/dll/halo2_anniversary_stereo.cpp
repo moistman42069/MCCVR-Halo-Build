@@ -1617,10 +1617,20 @@ namespace
         }
     }
 
+    // The longest byte pin EntryBytesMatch compares; every pin it is given is held to it at compile time.
+    constexpr size_t kMaxPinnedBytes = 64;
+    static_assert(sizeof(kHalo2SaberViewTargetsDrawEntryBytes) <= kMaxPinnedBytes &&
+                  sizeof(kHalo2SaberViewTargetsIndexBytes) <= kMaxPinnedBytes &&
+                  sizeof(kHalo2SaberViewTargetsReadBytes) <= kMaxPinnedBytes &&
+                  sizeof(kHalo2SaberRebuildViewMatricesEntryBytes) <= kMaxPinnedBytes &&
+                  sizeof(kHalo2SaberCameraCommitEntryBytes) <= kMaxPinnedBytes &&
+                  sizeof(kHalo2SaberCameraRefreshRectEntryBytes) <= kMaxPinnedBytes &&
+                  sizeof(kHalo2SaberHostUiCallbackEntryBytes) <= kMaxPinnedBytes,
+                  "a byte pin is longer than EntryBytesMatch compares");
     bool EntryBytesMatch(
         uintptr_t address, const uint8_t* expected, size_t bytes) noexcept
     {
-        uint8_t actual[32]{};
+        uint8_t actual[kMaxPinnedBytes]{};
         if (!address || !expected || bytes == 0 || bytes > sizeof(actual))
             return false;
         if (!CopyGuarded(actual, reinterpret_cast<const void*>(address), bytes))
