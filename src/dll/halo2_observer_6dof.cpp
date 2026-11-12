@@ -16,6 +16,7 @@
 #include "../common/halo2_snap_turn_logic.h"
 #include "../common/halo2_vehicle_view.h"
 #include "../common/halo2_foot_view.h"
+#include "../common/vr_turn_mode.h"
 #include "../common/halo2_head_relative_logic.h"
 #if HALOMCCVR_DEV_DIAGNOSTICS
 #include "../common/halo2_sound_listener_logic.h"   // the dev sound listener witness (halo2_sound_listener_witness.inl)
@@ -1519,6 +1520,31 @@ namespace
             if(framed) {
                 cameraSeatValid=Halo2VehicleCameraSampleSeat(vehicleKey,stock,cameraSeat);
                 if(cameraSeatValid) (void)Game_Halo2VehicleCamerasBegin(cameraSeat,followHull);
+            }
+            // VR turning in the seat (Halo2SeatTurnState), as Halo 3's: the right stick turns the seat's heading, smooth
+            // or snap, while the hand steers. Its clock restarts with each occupation, so a seat taken after a while
+            // does not turn by the whole gap.
+            {
+                static Halo2SeatTurnState s_seatTurn;
+                static LARGE_INTEGER s_seatTurnFrequency{}, s_lastSeatTurn{};
+                if (!s_seatTurnFrequency.QuadPart)
+                    QueryPerformanceFrequency(&s_seatTurnFrequency);
+                LARGE_INTEGER seatTurnNow{};
+                QueryPerformanceCounter(&seatTurnNow);
+                const float dt = g_vehicleView.active && s_lastSeatTurn.QuadPart && s_seatTurnFrequency.QuadPart
+                    ? static_cast<float>(seatTurnNow.QuadPart - s_lastSeatTurn.QuadPart) /
+                          static_cast<float>(s_seatTurnFrequency.QuadPart)
+                    : 0.0f;
+                s_lastSeatTurn = seatTurnNow;
+                if (!g_vehicleView.active)
+                    s_seatTurn.snapLatched = true;
+                bool snapped = false;
+                g_vehicleView.Turn(s_seatTurn.Step(snapshot.turnPadValid, snapshot.turnX,
+                    !UseSmoothVrTurn(g_config.turn_smooth, g_config.vehicle_smooth_turn,
+                        g_config.vehicle_smooth_turn),
+                    g_config.turn_snap_deg, g_config.turn_smooth_deg_s, dt, snapped));
+                if (snapped)
+                    g_snapTurns.fetch_add(1, std::memory_order_relaxed);
             }
             ownsVehicleReference=framed&&
                 g_vehicleView.Build(vehicleKey,stock,hull,followHull,
@@ -7084,7 +7110,7 @@ namespace
                 g_aimAssistViewDirectionRefused.load(
                     std::memory_order_relaxed)));
         LOG("Halo 2 snap turn: mode=%s accepted=%llu; common observer reference, "
-            "native body-yaw convergence; vehicle steering retains stick ownership",
+            "native body-yaw convergence; in a seat the stick turns the seat's heading while the hand steers",
             g_config.turn_smooth ? "smooth" : "snap",g_snapTurns.exchange(0));
         LOG("Halo 2 world collision: installed=%d active=%d requested=%d, "
             "%llu native queries, left/right contacts %llu/%llu, weapon "

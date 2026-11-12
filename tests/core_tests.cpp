@@ -324,6 +324,34 @@ int main()
             std::fabs(std::atan2(reference.forward[1],reference.forward[0])-.6f)<1e-5f,
             "H2 stale observer gap reseeds the vehicle reference");
         {
+            // VR turning in a seat: the stick turns a live occupation's heading, which the next frame keeps.
+            Halo2VehicleViewState turning;Halo2CameraBasis out{};
+            turning.Turn(.5f);
+            Check(!turning.active,"H2 seat turn: nothing to turn outside a seat");
+            Check(turning.Build(key,basis(.2f),basis(0),false,4000,out),"H2 seat turn: seated");
+            turning.Turn(.3f);
+            Check(turning.Build(key,basis(2.2f),basis(0),false,4010,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-.5f)<1e-5f,
+                "H2 seat turn: the heading turns and the next frame keeps it");
+            turning.Turn(3.0f);
+            Check(turning.Build(key,basis(2.2f),basis(0),false,4020,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-(3.5f-6.28318530718f))<1e-4f,
+                "H2 seat turn: the heading wraps");
+            Halo2SeatTurnState stick;bool snapped=false;
+            Check(stick.Step(true,1.0f,true,45.0f,90.0f,0.5f,snapped)==0.0f&&!snapped,
+                "H2 seat turn: a push held into the seat does not snap until the stick is let back");
+            (void)stick.Step(true,0.0f,false,45.0f,90.0f,0.016f,snapped);
+            const float smooth=stick.Step(true,1.0f,false,45.0f,90.0f,0.05f,snapped);
+            Check(std::fabs(smooth+90.0f*0.05f*0.0174532925f)<1e-5f&&!snapped,
+                "H2 seat turn: smooth, right turns right at turn_smooth_deg_s");
+            (void)stick.Step(true,0.0f,true,45.0f,90.0f,0.016f,snapped);
+            const float snap=stick.Step(true,-0.9f,true,45.0f,90.0f,0.016f,snapped);
+            const bool once=snapped;
+            Check(std::fabs(snap-45.0f*0.0174532925f)<1e-5f&&once&&
+                    stick.Step(true,-0.9f,true,45.0f,90.0f,0.016f,snapped)==0.0f&&!snapped,
+                "H2 seat turn: snap, one step per push");
+        }
+        {
             const float seed=-1.2f;
             auto seated=key;seated.seat=3;
             Check(state.Build(seated,basis(2.5f),basis(0),false,2004,reference,&seed)&&
