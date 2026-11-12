@@ -11076,6 +11076,12 @@ int main()
                       Halo2SaberViewTargetSlot(0, 1, 0) == 4 && Halo2SaberViewTargetSlot(2, 2, 1) == 12 &&
                       Halo2SaberViewTargetSlot(0, -1, 0) == UINT64_MAX,
                 "the view-target draw reads slot offset + half*2 + group*4 (Outskirts' load faulted on one)");
+            Check(Halo2SaberViewTargetPointerOffset(0, 0, 0) == 0x1DFF858 &&
+                      Halo2SaberViewTargetPointerOffset(1, 2, 1) == 0x1DFF858 + 11 * 0x4E0 &&
+                      Halo2SaberViewTargetPointerOffset(3, 2, 1) == 0x1DFF858 + 13 * 0x4E0 &&
+                      Halo2SaberViewTargetPointerOffset(0, -1, 0) == 0x1DFF858 - 4 * 0x4E0 &&
+                      Halo2SaberViewTargetPointerOffset(0xFFFFFFFFu, 0, 0) == 0x1DFF858 + 0xFFFFFFFFull * 0x4E0,
+                "the view-target check reads the very pointer the draw does, inside the twelve slots or not");
             {
                 namespace shake = halo2_camera_shake;
                 Check(shake::PatternByte(shake::kCallSitesPattern, shake::kAnimationCameraCallOffset) == 0xE8 &&

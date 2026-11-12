@@ -3144,6 +3144,17 @@ constexpr uint64_t Halo2SaberViewTargetSlot(uint32_t slotOffset, int32_t group, 
         (static_cast<int64_t>(half) + static_cast<int64_t>(group) * 2) * 2;
     return index < 0 ? UINT64_MAX : static_cast<uint64_t>(index);
 }
+// The pointer the draw reads for that view, as an offset from halo2.dll's base, exactly as 0x471E40 computes it:
+// the slot offset zero-extended, the rest sign-extended, times 0x4E0, from the table's pointer field -- wrapping as the
+// game's arithmetic does, so a slot outside the twelve is the address the game would read too (2026-11-11: a guard
+// that let such a view through still faulted at +0x107449 during a load).
+constexpr uint64_t Halo2SaberViewTargetPointerOffset(uint32_t slotOffset, int32_t group, uint8_t half) noexcept
+{
+    const uint64_t index = static_cast<uint64_t>(slotOffset) +
+        static_cast<uint64_t>((static_cast<int64_t>(half) + static_cast<int64_t>(group) * 2) * 2);
+    return static_cast<uint64_t>(kHalo2SaberViewSlotsRva + kHalo2SaberViewSlotPointerOffset) +
+        index * kHalo2SaberViewSlotStride;
+}
 // Its callers zero this span of the render context before every call.
 inline constexpr uint32_t kHalo2SaberSceneContextResetOffset = 0x10;
 inline constexpr uint32_t kHalo2SaberSceneContextResetBytes = 0xC8;
