@@ -7752,6 +7752,30 @@ int main()
             Check(!reclaimer_odst_hud::ListsBlock(block, lone) && !reclaimer_odst_hud::ListsBlock(block, reordered) &&
                       !reclaimer_odst_hud::ListsBlock(cut, shapes),
                 "a lone entry, another order or an entry that is not a whole record is not the client's block");
+            {
+                // Project Reclaimer 0.10.2's own table, as the 2026-11-11 scan found it: 0x64 apart, two pairs zero.
+                uint8_t table[reclaimer_odst_hud::kTableBytes]{};
+                const float tail[6]{2000.0f, 2000.0f, 58.0f, 4.0f, 0.87f, 0.87f};
+                for (int i = 0; i < reclaimer_odst_hud::kBlockRecords; ++i)
+                {
+                    uint8_t* entry = table + i * reclaimer_odst_hud::kTableStride;
+                    const uint32_t shape[2]{reclaimer_odst_hud::kBlockShapes[i].width,
+                                            reclaimer_odst_hud::kBlockShapes[i].height};
+                    std::memcpy(entry, shape, sizeof(shape));
+                    std::memcpy(entry + sizeof(shape), tail, (i == 2 || i == 3) ? 16 : sizeof(tail));
+                }
+                const bool found = reclaimer_odst_hud::TableAt(table);
+                uint8_t swapped[sizeof(table)];
+                std::memcpy(swapped, table, sizeof(table));
+                std::memcpy(swapped, table + reclaimer_odst_hud::kTableStride, 8);
+                uint8_t halo3[sizeof(table)];
+                std::memcpy(halo3, table, sizeof(table));
+                const float halo3Sensor = 55.0f;
+                std::memcpy(halo3 + 8, &halo3Sensor, sizeof(halo3Sensor));
+                Check(found && !reclaimer_odst_hud::TableAt(swapped) && !reclaimer_odst_hud::TableAt(halo3) &&
+                          reclaimer_odst_hud::kTableBytes == 4 * 0x64 + 24 + 8,
+                      "Project Reclaimer 0.10.2's table of ODST's layouts: the five in order, ODST's sensor, pairs at +24");
+            }
         }
         {
             // Records left from an earlier level (Project Reclaimer, 2026-11-07): the ODST level's six still held
