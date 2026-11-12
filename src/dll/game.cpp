@@ -5325,7 +5325,10 @@ namespace
                 if (odstLevel)
                     g_reclaimerOdstHudMarkerGeneration.store(generation, std::memory_order_relaxed);
                 else if (g_reclaimerOdstHud.generation.load(std::memory_order_relaxed) != generation)
+                {
                     g_reclaimerOdstHud.record.store(0, std::memory_order_relaxed);
+                    g_reclaimerOdstHud.table.store(0, std::memory_order_relaxed);
+                }
             }
         }
         else
