@@ -28,6 +28,9 @@
 // CE's check answers true for Centered (and for Lowered while the unit's +0x2D0 is set); its callers then skip the
 // Lowered offsets. Halo 2's answers true for Centered while the unit's +0x210 is clear; its callers then take the
 // Lowered offsets out. The copies themselves are left alone.
+//
+// Where each fill is, in each title's module: centred_crosshair_sites.h. The patterns there wildcard the patched
+// instruction, so a module the mod already patched still matches; the instruction itself is checked here.
 #pragma once
 
 #include <cstddef>
@@ -43,101 +46,10 @@ namespace centred_crosshair
         Fallthrough,   // jne rel8 -> two nops
     };
 
-    // One fill. The pattern is the stock bytes with the patched instruction wildcarded, so a module the mod already
-    // patched still matches; the stock or patched instruction itself is checked at `patchOffset`. A fill that hands
-    // the value to a setter names the call (`callOffset`, an E8) and what the setter must be.
-    struct Site
-    {
-        const char* pattern;
-        size_t patchOffset;
-        Patch patch;
-        size_t callOffset = 0;
-        const char* callee = nullptr;
-    };
-
-    // The fill's caller: `lea rax, [rip + array]` and `imul reg, user, stride`. No pattern: the title's check is
-    // patched instead and there is no setting of its own to set.
-    struct ProfileArray
-    {
-        const char* pattern;
-        size_t displacementOffset;
-        size_t nextInstructionOffset;
-        size_t strideOffset;
-    };
-
-    struct Title
-    {
-        const char* name;
-        const Site* sites;
-        size_t siteCount;
-        ProfileArray array;
-        uint32_t field;   // the setting's offset in the game's profile; 0 where there is none
-    };
-
     inline constexpr uint32_t kUsers = 4;
     inline constexpr uint32_t kProfileInElement = 8;
     inline constexpr int32_t kCentred = 1;
     inline constexpr size_t kMostPatchBytes = 5;
-    inline constexpr size_t kCalleeBytes = 64;
-
-    // halo3.dll +0x2DA29F: the compare, a store between, then the jump.
-    inline constexpr Site kHalo3Sites[]{
-        {"41 80 7E 1C 01 F3 0F 11 8D ?? ?? 00 00 ?? 05 45 33 DB EB 06 41 BB 01 00 00 00 33 D2 48 8B CB E8 ?? ?? ?? ?? "
-         "80 BD ?? ?? 00 00 00 41 B7 01 44 89 5B 68",
-         13, Patch::Jump},
-    };
-    // halo3odst.dll +0x305FF9.
-    inline constexpr Site kOdstSites[]{
-        {"80 7E 1C 01 ?? 05 45 33 DB EB 06 41 BB 01 00 00 00 33 D2 48 8B CB E8 ?? ?? ?? ?? 80 BD ?? ?? 00 00 00 41 B7 01 "
-         "44 89 5B 5C",
-         4, Patch::Jump},
-    };
-    // haloreach.dll +0x2C9664 (the full fill) and +0x2EE03F (the fill of a changed setting).
-    inline constexpr Site kReachSites[]{
-        {"80 7E 1C 01 ?? 0E E8 ?? ?? ?? ?? 83 A7 80 00 00 00 00 EB 0F E8 ?? ?? ?? ?? C7 87 80 00 00 00 01 00 00 00", 4,
-         Patch::Jump},
-        {"44 89 67 48 ?? ?? ?? ?? ?? 83 FB 02 73 17 3B 9F 80 00 00 00 48 8B CF 0F 95 C2 E8 ?? ?? ?? ?? 89 9F 80 00 00 00",
-         4, Patch::Load},
-    };
-    // halo4.dll +0x3CC3EF (the full fill) and +0x3FB146 (the fill of a changed setting, through the setter at
-    // +0x3C9C30).
-    inline constexpr Site kHalo4Sites[]{
-        {"80 7E 1C 01 ?? 04 33 DB EB 05 BB 01 00 00 00 48 8B 7C 24 30 33 D2 48 8B CF E8 ?? ?? ?? ?? 80 7C 24 21 00 89 9F "
-         "90 00 00 00",
-         4, Patch::Jump},
-        {"45 8A C5 ?? ?? ?? ?? ?? 48 8B CF E8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 45 8A C5 48 8B CF 84 C0 0F 84", 3, Patch::Load,
-         11,
-         "83 FA 02 7D ?? 48 89 5C 24 08 57 48 83 EC 20 8B FA 48 8B D9 33 D2 45 84 C0 74 ?? 3B B9 90 00 00 00 74 02 B2 01 "
-         "E8 ?? ?? ?? ?? 89 BB 90 00 00 00"},
-    };
-
-    // halo1.dll +0xBF8B7: the check's compare and jump at +0x1D.
-    inline constexpr Site kHaloCESites[]{
-        {"0F BF C9 E8 ?? ?? ?? ?? 48 63 D0 48 8D 0D ?? ?? ?? ?? 48 69 C2 CC 0A 00 00 80 3C 08 01 ?? ?? ?? 00 00 00 48 0F "
-         "BF C3 48 6B C8 58",
-         29, Patch::NearJump},
-    };
-    // halo2.dll +0x3C1E2: the check's compare and jump at +0x1A.
-    inline constexpr Site kHalo2Sites[]{
-        {"83 F9 03 77 ?? 48 63 C1 48 69 D0 CC 0A 00 00 48 8D 05 ?? ?? ?? ?? 80 3C 02 01 ?? ?? E8 ?? ?? ?? ?? 84 C0 0F B6 "
-         "CB BA 01 00 00 00 0F 44 CA",
-         26, Patch::Fallthrough},
-    };
-
-    inline constexpr Title kHalo3{"Halo 3", kHalo3Sites, 1,
-                                  {"4C 63 CA 48 8D 05 ?? ?? ?? ?? 49 69 F9 ?? ?? 00 00 48 8B D9 48 03 F8 48 8B CF", 6, 10, 13},
-                                  0x68};
-    inline constexpr Title kOdst{"ODST", kOdstSites, 1,
-                                 {"4C 63 CA 48 8D 05 ?? ?? ?? ?? 49 69 F9 ?? ?? 00 00 48 8B D9 48 03 F8 48 8B CF", 6, 10, 13},
-                                 0x5C};
-    inline constexpr Title kReach{"Reach", kReachSites, 2,
-                                  {"4C 63 CA 48 8D 05 ?? ?? ?? ?? 48 8B D9 49 69 F1 ?? ?? 00 00 48 03 F0 48 8B CE", 6, 10, 16},
-                                  0x80};
-    inline constexpr Title kHalo4{"Halo 4", kHalo4Sites, 2,
-                                  {"4C 63 E2 48 8D 05 ?? ?? ?? ?? 48 8B F9 49 69 F4 ?? ?? 00 00 48 03 F0 48 8B CE", 6, 10, 16},
-                                  0x90};
-    inline constexpr Title kHaloCE{"Halo CE", kHaloCESites, 1, {nullptr, 0, 0, 0}, 0};
-    inline constexpr Title kHalo2{"Halo 2", kHalo2Sites, 1, {nullptr, 0, 0, 0}, 0};
 
     // How many bytes a pattern spans.
     inline constexpr size_t PatternBytes(const char* pattern) noexcept
@@ -242,34 +154,6 @@ namespace centred_crosshair
         centred[2] = centred[3] = centred[4] = 0x00;
         length = kMostPatchBytes;
         return true;
-    }
-
-    // The target of the E8 at `call`, which sits at `callAddress`.
-    inline uintptr_t CallTarget(const uint8_t* call, uintptr_t callAddress) noexcept
-    {
-        if (!call || call[0] != 0xE8)
-            return 0;
-        uint32_t rel = 0;
-        for (int i = 4; i >= 1; --i)
-            rel = rel << 8 | call[i];
-        return callAddress + 5 + static_cast<intptr_t>(static_cast<int32_t>(rel));
-    }
-
-    // `match`: the bytes at the array pattern's match, at `matchAddress`. The array's address and stride; the stride
-    // must hold the profile's field.
-    inline bool DecodeArray(const ProfileArray& layout, const uint8_t* match, uintptr_t matchAddress, uint32_t field,
-                            uintptr_t& array, uint32_t& stride) noexcept
-    {
-        if (!match)
-            return false;
-        uint32_t displacement = 0;
-        for (int i = 3; i >= 0; --i)
-            displacement = displacement << 8 | match[layout.displacementOffset + i];
-        stride = 0;
-        for (int i = 3; i >= 0; --i)
-            stride = stride << 8 | match[layout.strideOffset + i];
-        array = matchAddress + layout.nextInstructionOffset + static_cast<intptr_t>(static_cast<int32_t>(displacement));
-        return stride >= kProfileInElement + field + sizeof(int32_t) && stride < 0x10000;
     }
 
     // Where user `user`'s setting lives.

@@ -371,7 +371,7 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation);
 #include "../common/aim_write_logic.h"
 #include "../common/aim_caller_logic.h"
 #include "../common/seat_drive_policy.h"
-#include "../common/centred_crosshair_logic.h"
+#include "../common/centred_crosshair_sites.h"
 #include "../common/gun_slaved_seat_logic.h"
 #include "../common/seat_upstream_logic.h"
 #include "../common/vehicle_gun_band_logic.h"
