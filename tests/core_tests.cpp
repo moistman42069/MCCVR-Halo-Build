@@ -13,6 +13,7 @@ int RunDirectorCameraTests();
 #include "../src/common/halo4_runtime_weapon_bounds.h"
 #include "../src/common/legacy_runtime_weapon_bounds.h"
 #include "../src/common/halo2_snap_turn_logic.h"
+#include "../src/common/halo2_camera_shake_logic.h"
 #include "../src/common/halo2_vehicle_view.h"
 #include "../src/common/halo2_foot_view.h"
 #include "../src/common/halo2_datum_logic.h"
@@ -322,6 +323,34 @@ int main()
         Check(state.Build(key,basis(.6f),basis(0),false,2000,reference)&&
             std::fabs(std::atan2(reference.forward[1],reference.forward[0])-.6f)<1e-5f,
             "H2 stale observer gap reseeds the vehicle reference");
+        {
+            // VR turning in a seat: the stick turns a live occupation's heading, which the next frame keeps.
+            Halo2VehicleViewState turning;Halo2CameraBasis out{};
+            turning.Turn(.5f);
+            Check(!turning.active,"H2 seat turn: nothing to turn outside a seat");
+            Check(turning.Build(key,basis(.2f),basis(0),false,4000,out),"H2 seat turn: seated");
+            turning.Turn(.3f);
+            Check(turning.Build(key,basis(2.2f),basis(0),false,4010,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-.5f)<1e-5f,
+                "H2 seat turn: the heading turns and the next frame keeps it");
+            turning.Turn(3.0f);
+            Check(turning.Build(key,basis(2.2f),basis(0),false,4020,out)&&
+                std::fabs(std::atan2(out.forward[1],out.forward[0])-(3.5f-6.28318530718f))<1e-4f,
+                "H2 seat turn: the heading wraps");
+            Halo2SeatTurnState stick;bool snapped=false;
+            Check(stick.Step(true,1.0f,true,45.0f,90.0f,0.5f,snapped)==0.0f&&!snapped,
+                "H2 seat turn: a push held into the seat does not snap until the stick is let back");
+            (void)stick.Step(true,0.0f,false,45.0f,90.0f,0.016f,snapped);
+            const float smooth=stick.Step(true,1.0f,false,45.0f,90.0f,0.05f,snapped);
+            Check(std::fabs(smooth+90.0f*0.05f*0.0174532925f)<1e-5f&&!snapped,
+                "H2 seat turn: smooth, right turns right at turn_smooth_deg_s");
+            (void)stick.Step(true,0.0f,true,45.0f,90.0f,0.016f,snapped);
+            const float snap=stick.Step(true,-0.9f,true,45.0f,90.0f,0.016f,snapped);
+            const bool once=snapped;
+            Check(std::fabs(snap-45.0f*0.0174532925f)<1e-5f&&once&&
+                    stick.Step(true,-0.9f,true,45.0f,90.0f,0.016f,snapped)==0.0f&&!snapped,
+                "H2 seat turn: snap, one step per push");
+        }
         {
             const float seed=-1.2f;
             auto seated=key;seated.seat=3;
@@ -1951,18 +1980,42 @@ int main()
               "art centre: no measurement leaves the quad centred");
 
         // Bloom shuffles the centroid by a texel; the centre in use holds until
-        // a measurement moves it past the deadband, and a gap keeps it.
+        // a measurement moves it past the deadband for `confirm` samples, and a gap keeps it.
+        constexpr float deadband = 2.0f / 512.0f;
+        constexpr uint32_t confirm = 4;
         AuthoredReticleArtCentre nudged = byColour;
         nudged.v += 1.0f / 512.0f;
-        Check(SettleAuthoredReticleArtCentre(byColour, nudged, 2.0f / 512.0f).v == byColour.v,
+        AuthoredReticleCentreSettle settle{};
+        Check(settle.Step(byColour, nudged, deadband, confirm).v == byColour.v,
               "art centre: a texel of jitter does not move the quad");
         AuthoredReticleArtCentre moved = byColour;
         moved.v += 5.0f / 512.0f;
-        Check(SettleAuthoredReticleArtCentre(byColour, moved, 2.0f / 512.0f).v == moved.v,
-              "art centre: a real move is followed at once");
-        Check(SettleAuthoredReticleArtCentre(byColour, {}, 2.0f / 512.0f).v == byColour.v &&
-                  SettleAuthoredReticleArtCentre({}, byColour, 2.0f / 512.0f).valid,
-              "art centre: an unmeasured sample keeps the centre; the first one sets it");
+        settle = {};
+        bool heldThenMoved = true;
+        for (uint32_t i = 1; i < confirm; ++i)
+            heldThenMoved = heldThenMoved && settle.Step(byColour, moved, deadband, confirm).v == byColour.v;
+        Check(heldThenMoved && settle.Step(byColour, moved, deadband, confirm).v == moved.v,
+              "art centre: a real move is followed once it has held for the confirm count");
+        settle = {};
+        AuthoredReticleArtCentre passing = byColour;
+        passing.v -= 0.25f;
+        for (uint32_t i = 1; i < confirm; ++i)
+            (void)settle.Step(byColour, passing, deadband, confirm);
+        Check(settle.Step(byColour, byColour, deadband, confirm).v == byColour.v &&
+                  settle.Step(byColour, passing, deadband, confirm).v == byColour.v,
+              "art centre: art that passes through for fewer than the confirm count does not move the quad");
+        settle = {};
+        AuthoredReticleArtCentre cutOff = passing;
+        cutOff.touchesEdge = true;
+        bool cutOffHeld = true;
+        for (uint32_t i = 0; i < confirm * 3; ++i)
+            cutOffHeld = cutOffHeld && settle.Step(byColour, cutOff, deadband, confirm).v == byColour.v;
+        Check(cutOffHeld, "art centre: art cut off by the capture's edge never moves the quad, however long it stays");
+        settle = {};
+        Check(settle.Step(byColour, {}, deadband, confirm).v == byColour.v &&
+                  settle.Step({}, byColour, deadband, confirm).valid &&
+                  settle.Step({}, cutOff, deadband, confirm).v == cutOff.v,
+              "art centre: an unmeasured sample keeps the centre; the first one sets it, cut off or not");
     }
     {
         // The capture window follows art drawn away from the view's centre (a Halo 2 vehicle's reticle).
@@ -7727,6 +7780,30 @@ int main()
             Check(!reclaimer_odst_hud::ListsBlock(block, lone) && !reclaimer_odst_hud::ListsBlock(block, reordered) &&
                       !reclaimer_odst_hud::ListsBlock(cut, shapes),
                 "a lone entry, another order or an entry that is not a whole record is not the client's block");
+            {
+                // Project Reclaimer 0.10.2's own table, as the 2026-11-11 scan found it: 0x64 apart, two pairs zero.
+                uint8_t table[reclaimer_odst_hud::kTableBytes]{};
+                const float tail[6]{2000.0f, 2000.0f, 58.0f, 4.0f, 0.87f, 0.87f};
+                for (int i = 0; i < reclaimer_odst_hud::kBlockRecords; ++i)
+                {
+                    uint8_t* entry = table + i * reclaimer_odst_hud::kTableStride;
+                    const uint32_t shape[2]{reclaimer_odst_hud::kBlockShapes[i].width,
+                                            reclaimer_odst_hud::kBlockShapes[i].height};
+                    std::memcpy(entry, shape, sizeof(shape));
+                    std::memcpy(entry + sizeof(shape), tail, (i == 2 || i == 3) ? 16 : sizeof(tail));
+                }
+                const bool found = reclaimer_odst_hud::TableAt(table);
+                uint8_t swapped[sizeof(table)];
+                std::memcpy(swapped, table, sizeof(table));
+                std::memcpy(swapped, table + reclaimer_odst_hud::kTableStride, 8);
+                uint8_t halo3[sizeof(table)];
+                std::memcpy(halo3, table, sizeof(table));
+                const float halo3Sensor = 55.0f;
+                std::memcpy(halo3 + 8, &halo3Sensor, sizeof(halo3Sensor));
+                Check(found && !reclaimer_odst_hud::TableAt(swapped) && !reclaimer_odst_hud::TableAt(halo3) &&
+                          reclaimer_odst_hud::kTableBytes == 4 * 0x64 + 24 + 8,
+                      "Project Reclaimer 0.10.2's table of ODST's layouts: the five in order, ODST's sensor, pairs at +24");
+            }
         }
         {
             // Records left from an earlier level (Project Reclaimer, 2026-11-07): the ODST level's six still held
@@ -11021,6 +11098,30 @@ int main()
                       Halo2SaberViewSlotsIntact(0xFFF, 0xFFF) && Halo2SaberViewSlotsIntact(0x0F0, 0xFFF) &&
                       !Halo2SaberViewSlotsIntact(0xFFF, 0xFFE) && !Halo2SaberViewSlotsIntact(0x0F0, 0),
                 "an eye pass waits while any slot seen filled this level is empty");
+            Check(kHalo2SaberViewTargetsDrawRva == 0x004719B0 &&
+                      Halo2SaberViewTargetSlot(0, 0, 0) == 0 && Halo2SaberViewTargetSlot(1, 0, 1) == 3 &&
+                      Halo2SaberViewTargetSlot(0, 2, 1) == 10 && Halo2SaberViewTargetSlot(1, 2, 1) == 11 &&
+                      Halo2SaberViewTargetSlot(0, 1, 0) == 4 && Halo2SaberViewTargetSlot(2, 2, 1) == 12 &&
+                      Halo2SaberViewTargetSlot(0, -1, 0) == UINT64_MAX,
+                "the view-target draw reads slot offset + half*2 + group*4 (Outskirts' load faulted on one)");
+            Check(Halo2SaberViewTargetPointerOffset(0, 0, 0) == 0x1DFF858 &&
+                      Halo2SaberViewTargetPointerOffset(1, 2, 1) == 0x1DFF858 + 11 * 0x4E0 &&
+                      Halo2SaberViewTargetPointerOffset(3, 2, 1) == 0x1DFF858 + 13 * 0x4E0 &&
+                      Halo2SaberViewTargetPointerOffset(0, -1, 0) == 0x1DFF858 - 4 * 0x4E0 &&
+                      Halo2SaberViewTargetPointerOffset(0xFFFFFFFFu, 0, 0) == 0x1DFF858 + 0xFFFFFFFFull * 0x4E0,
+                "the view-target check reads the very pointer the draw does, inside the twelve slots or not");
+            {
+                namespace shake = halo2_camera_shake;
+                Check(shake::PatternByte(shake::kCallSitesPattern, shake::kAnimationCameraCallOffset) == 0xE8 &&
+                          shake::PatternByte(shake::kCallSitesPattern, shake::kScreenShakeCallOffset) == 0xE8 &&
+                          shake::kCallSitesRva + shake::kAnimationCameraCallOffset == 0x6F02B1 &&
+                          shake::kCallSitesRva + shake::kScreenShakeCallOffset == 0x6F02DD &&
+                          shake::PatternByte(shake::kCallSitesPattern, shake::kAnimationCameraCallOffset + 1) == -1,
+                      "Halo 2's camera shake: the call-site pattern names both calls of the observer transform");
+                Check(shake::PatternByte(shake::kAnimationCameraPattern, 0) == 0x48 &&
+                          shake::PatternByte(shake::kScreenShakePattern, 0) == 0x48 && shake::kMatrixBytes == 13 * 4,
+                      "Halo 2's camera shake: both routines' entries are pinned; the matrix is real_matrix4x3");
+            }
             float a[16]{1,0,0,0, 0,1,0,0, 0,0,1,0, 1.0f,2.0f,3.0f,1};
             float b[16]{1,0,0,0, 0,1,0,0, 0,0,1,0, 1.0f,2.0f,3.0f,1};
             Check(Halo2SaberViewMatricesMatch(a, b, 2.0e-3f, 0.02f),

@@ -87,16 +87,23 @@ static void TestBuiltInTable()
                 continue;
             startsInSeat = startsInSeat && vehicle.cameras.size() >= 2 && vehicle.defaultCamera == 0 &&
                            vehicle.cameras[0].type == CameraType::FirstPerson;
-            thirdPersonSecond = thirdPersonSecond && vehicle.cameras[1].origin == Origin::ThirdPerson &&
-                                vehicle.cameras[1].name == "Third Person";
+            // Halo 2's Wraith, as tuned in the headset, puts its cannon camera ahead of the game's.
+            const bool halo2Wraith = section == 4 && vehicle.name == "Wraith";
+            const std::size_t thirdPersonAt = halo2Wraith ? 2u : 1u;
+            thirdPersonSecond = thirdPersonSecond && vehicle.cameras.size() > thirdPersonAt &&
+                                vehicle.cameras[thirdPersonAt].origin == Origin::ThirdPerson &&
+                                vehicle.cameras[thirdPersonAt].name == "Third Person";
             // One match text, the vehicle's name; Halo 3's and ODST's Elephant and Prowler also their stock tags' words,
             // Reach's turret the words of its walk-up guns, Halo 2's the gun tower's, and Halo CE's Shade the turret's.
             const bool tagWord = vehicle.name.rfind("Elephant", 0) == 0 || vehicle.name.rfind("Prowler", 0) == 0 ||
                                  (section == 5 && vehicle.name == "Shade");
             const bool turret = vehicle.name == "Turret";
             const std::size_t matches = section == 1 && turret ? 4u : (section == 4 && turret ? 2u : (tagWord ? 2u : 1u));
+            // Halo 2's Scorpion, as tuned in the headset, keeps only its moved seat view and the game's.
+            const bool halo2Scorpion = section == 4 && vehicle.name == "Scorpion";
             if (!vehicle.isDefault)
-                othersBeyond = othersBeyond && vehicle.cameras.size() >= 3 && vehicle.match.size() == matches;
+                othersBeyond = othersBeyond && vehicle.cameras.size() >= (halo2Scorpion ? 2u : 3u) &&
+                               vehicle.match.size() == matches;
             for (const Vehicle& other : own.vehicles)
                 namedOnce = namedOnce && (&other == &vehicle || other.name != vehicle.name);
         }
@@ -166,6 +173,39 @@ static void TestBuiltInTable()
     Check(halo2.vehicles[static_cast<std::size_t>(MatchVehicle(halo2, "phantom", kSeatPassenger))].isDefault &&
               halo2.vehicles[static_cast<std::size_t>(MatchVehicle(halo2, "custom_0badf00d", kSeatDriver))].isDefault,
           "and a vehicle with no entry of its own rides Halo 2's default");
+    // Halo 2's cameras as tuned in the headset (2026-11-11).
+    {
+        const auto entry = [&halo2](const char* name) -> const Vehicle* {
+            for (const Vehicle& vehicle : halo2.vehicles)
+                if (vehicle.name == name)
+                    return &vehicle;
+            return nullptr;
+        };
+        const auto at = [](const Camera& camera, float forward, float right, float up) {
+            return camera.offset[0] == forward && camera.offset[1] == right && camera.offset[2] == up;
+        };
+        const Vehicle* warthog = entry("Warthog");
+        const Vehicle* passenger = entry("Warthog passenger");
+        const Vehicle* ghost = entry("Ghost");
+        const Vehicle* banshee = entry("Banshee");
+        const Vehicle* scorpion = entry("Scorpion");
+        const Vehicle* wraith = entry("Wraith");
+        Check(warthog && warthog->cameras.size() == 3 && warthog->cameras[2].name == "Left Side" && passenger &&
+                  passenger->cameras.size() == 3 && passenger->cameras[2].name == "Right Side",
+              "Halo 2's Warthog front seats: the seat, the game's and the side camera");
+        Check(ghost && ghost->cameras.size() == 3 && at(ghost->cameras[0], 0, 0, 50) &&
+                  ghost->cameras[2].name == "Over the Shoulder" && at(ghost->cameras[2], -100, 80, 100),
+              "Halo 2's Ghost: the seat view 50 cm up, and its over-the-shoulder camera as tuned");
+        Check(banshee && banshee->cameras.size() == 3 && at(banshee->cameras[2], -150, 150, 200),
+              "Halo 2's Banshee: its over-the-shoulder camera as tuned");
+        Check(scorpion && scorpion->cameras.size() == 2 && at(scorpion->cameras[0], 120, 0, 20),
+              "Halo 2's Scorpion: the seat view moved forward and up, and the game's");
+        Check(wraith && wraith->cameras.size() == 3 && at(wraith->cameras[0], 0, 0, 100) &&
+                  wraith->cameras[1].name == "Cannon" && wraith->cameras[1].origin == Origin::Vehicle &&
+                  at(wraith->cameras[1], -100, 0, 150) && wraith->cameras[1].lag == 0.3f &&
+                  !wraith->cameras[1].locPitch && wraith->cameras[2].origin == Origin::ThirdPerson,
+              "Halo 2's Wraith: the seat view 1 m up, its cannon camera, then the game's");
+    }
     {
         const Game& halo3 = built.games[0];
         int modEntries = 0;

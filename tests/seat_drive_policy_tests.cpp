@@ -430,6 +430,63 @@ void TestOutcomeGate()
         Check(g.step(0.05f, false, 1260), "and then completes");
     }
 }
+void TestArmPitchRun()
+{
+    constexpr float tol = 0.03f, maxOffset = 0.21f;
+    constexpr float deg = 0.0174533f;
+    // The VD log's camera pitches with the record 6.8 deg below: the run starts on the first sample and holds.
+    seat_drive::ArmPitchRun run;
+    Check(!run.step(-0.151f, -0.020f, tol, maxOffset), "the first sample starts a run");
+    int held = 0;
+    for (int i = 0; i < 30; ++i)
+        held += run.step(-0.151f + i * 0.01f, -0.020f + i * 0.01f + (i % 2 ? 0.5f : -0.5f) * deg, tol, maxOffset);
+    Check(held == 30, "a record a steady 7.5 deg below a moving camera holds the run");
+    // Agreement is an offset of 0.
+    seat_drive::ArmPitchRun level;
+    Check(!level.step(0.10f, 0.10f, tol, maxOffset) && level.step(0.12f, 0.12f, tol, maxOffset),
+          "an agreeing pitch holds too");
+    // The offset changing by more than the tolerance restarts the run at the new offset.
+    Check(!run.step(0.0f, 0.0f, tol, maxOffset) && run.step(0.01f, 0.01f, tol, maxOffset),
+          "a changed offset starts a new run");
+    // Too large an offset is no run at all.
+    seat_drive::ArmPitchRun far;
+    Check(!far.step(-0.40f, 0.0f, tol, maxOffset) && !far.step(-0.40f, 0.0f, tol, maxOffset),
+          "a 23 deg offset never holds");
+    Check(!far.step(NAN, 0.0f, tol, maxOffset) && !far.started, "a non-finite pitch ends the run");
+}
+void TestSteadyPitchOffset()
+{
+    constexpr float tol = 0.03f, maxOffset = 0.21f;
+    constexpr uint32_t need = 30;
+    // MCC's crosshair lowered: the record a steady 7 deg below the camera is adopted on the 30th update, as the
+    // run's mean.
+    seat_drive::SteadyPitchOffset lowered;
+    bool moved = false;
+    for (uint32_t i = 0; i < need; ++i)
+    {
+        Check(!moved, "nothing is adopted before the run is long enough");
+        moved = lowered.step(-0.122f + (i % 2 ? 0.004f : -0.004f), tol, maxOffset, need);
+    }
+    Check(moved && std::fabs(lowered.value + 0.122f) < 0.002f, "a steady 7 deg offset is adopted");
+    Check(!lowered.step(-0.122f, tol, maxOffset, need), "a longer run adopts it only once");
+    // A turn's lag breaks the run; the offset in force stays.
+    Check(!lowered.step(-0.05f, tol, maxOffset, need) && std::fabs(lowered.value + 0.122f) < 0.002f,
+          "a passing disagreement keeps the offset");
+    Check(!lowered.step(0.5f, tol, maxOffset, need) && std::fabs(lowered.value + 0.122f) < 0.002f,
+          "an offset too large to be the crosshair's keeps it too");
+    // The crosshair centred again: a run at 0 replaces it.
+    moved = false;
+    for (uint32_t i = 0; i < need; ++i)
+        moved = lowered.step(0.001f, tol, maxOffset, need) || moved;
+    Check(moved && std::fabs(lowered.value) < 0.002f, "a steady agreement takes the offset back to 0");
+    // Centred from the start: nothing moves.
+    seat_drive::SteadyPitchOffset centred;
+    moved = false;
+    for (uint32_t i = 0; i < 2 * need; ++i)
+        moved = centred.step(0.0f, tol, maxOffset, need) || moved;
+    Check(!moved && centred.value == 0.0f, "an agreeing record never moves the offset");
+    Check(!centred.step(NAN, tol, maxOffset, need) && centred.value == 0.0f, "a non-finite reading is no reading");
+}
 } // namespace
 
 int main()
@@ -438,6 +495,8 @@ int main()
     TestStintCheck();
     TestCombineStints();
     TestOutcomeGate();
+    TestArmPitchRun();
+    TestSteadyPitchOffset();
     std::printf("Seat drive policy: %u checks, %u failures\n", checks, failures);
     return failures ? 1 : 0;
 }

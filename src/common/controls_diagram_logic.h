@@ -193,7 +193,7 @@ inline Labels Build(const Setup& setup)
             const auto extra=static_cast<ExtraAction>(x);
             const ExtraContext context=kExtraContexts[x];
             if(context!=ExtraContext::Anywhere&&(context==ExtraContext::Seat)!=vehicle) continue;
-            if(NativeExtraAction(setup.game,extra)==kNoAction) continue;
+            if(NativeExtraAction(setup.game,extra)==kNoAction||RetiredExtra(extra)) continue;
             const char* name=ExtraName(setup.game,extra);
             const auto& row=(*setup.extra)[x];
             for(unsigned i=0;i<kRowInputs;++i)

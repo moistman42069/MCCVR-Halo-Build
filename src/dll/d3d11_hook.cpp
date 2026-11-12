@@ -1773,16 +1773,18 @@ static BOOL WINAPI GetCursorPosHook(LPPOINT p)
 
 // A mouse message for MCC's window, in the space MCC's cursor reads are given (GetCursorPosHook): with the window
 // fitted to the monitor, a button message's client point and a wheel message's screen point are scaled up to the
-// render size as the cursor is (fit_mouse_logic.h), so MCC's press and its hover name the same item. Otherwise, or
-// outside the window, the message is MCC's as it came. Project Reclaimer's fitted window (D3D_HostFitWindow): its
-// menus hover by the move message's own point, not by the cursor, so moves are scaled too.
+// render size as the cursor is (fit_mouse_logic.h), so MCC's press and its hover name the same item. A move message's
+// client point is scaled too: some menus hover by it, not by the cursor read -- MCC's mission carousel lit the tile at
+// the window's share of the pointed point (1772/2912 of the way from the top-left on a 1440p monitor) while the press
+// went where the cursor was -- and so do Project Reclaimer's (D3D_HostFitWindow). Otherwise, or outside the window, the
+// message is MCC's as it came.
 LPARAM D3D_MapMouseMessageToRender(UINT msg, LPARAM lp)
 {
     const bool button = (msg >= WM_LBUTTONDOWN && msg <= WM_MBUTTONDBLCLK) ||
                         (msg >= WM_XBUTTONDOWN && msg <= WM_XBUTTONDBLCLK);
     const bool wheel = msg == WM_MOUSEWHEEL || msg == WM_MOUSEHWHEEL;
-    const bool hostMove = msg == WM_MOUSEMOVE && D3D_HostFitWindow();
-    if ((!button && !wheel && !hostMove) || !CursorRemapActive() || !g_forcedRenderW || !g_forcedRenderH)
+    const bool move = msg == WM_MOUSEMOVE;
+    if ((!button && !wheel && !move) || !CursorRemapActive() || !g_forcedRenderW || !g_forcedRenderH)
         return lp;
     POINT origin{};
     LONG cw = 0, ch = 0;
@@ -1887,7 +1889,8 @@ static HWND WINAPI WindowFromPointHook(POINT pt)
     // to still land on the small top-left slice work. Map ANY point inside the
     // render rectangle back down into the real window client before the OS
     // answers, so every menu item resolves to the game window like it should.
-    if (CursorRemapActive() && g_forcedRenderW && g_forcedRenderH)
+    // Only the game's own asks are in render space: the menu pointer asks about the real point it moves the cursor to.
+    if (CursorRemapActive() && g_forcedRenderW && g_forcedRenderH && CallerInExe(_ReturnAddress()))
     {
         POINT origin{};
         LONG cw = 0, ch = 0;
@@ -3890,6 +3893,45 @@ static UINT PacedSyncInterval(UINT requested)
     return 0;
 }
 
+#if HALOMCCVR_DEV_DIAGNOSTICS
+// DEV BUILDS ONLY: a low frame rate on demand. dev-frame-delay.txt beside the DLL holds "<ms> [<jitter ms>]"; each
+// game frame then sleeps that long (plus up to the jitter) before it presents. Read once a second, so a headless
+// test can turn it on and off mid-run; no file means no delay.
+static void DevFrameDelay()
+{
+    static uint64_t checkedMs = 0;
+    static DWORD delayMs = 0, jitterMs = 0;
+    static uint32_t seed = 1;
+    const uint64_t now = GetTickCount64();
+    if (now - checkedMs >= 1000)
+    {
+        checkedMs = now;
+        wchar_t path[MAX_PATH]{};
+        HMODULE self{};
+        DWORD delay = 0, jitter = 0;
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                reinterpret_cast<LPCWSTR>(&DevFrameDelay), &self) &&
+            GetModuleFileNameW(self, path, MAX_PATH))
+        {
+            if (wchar_t* slash = wcsrchr(path, L'\\')) wcscpy_s(slash + 1, path + MAX_PATH - (slash + 1), L"dev-frame-delay.txt");
+            FILE* f = nullptr;
+            if (_wfopen_s(&f, path, L"r") == 0 && f)
+            {
+                unsigned d = 0, j = 0;
+                if (fscanf_s(f, "%u %u", &d, &j) >= 1) { delay = d > 2000 ? 2000 : d; jitter = j > 2000 ? 2000 : j; }
+                fclose(f);
+            }
+        }
+        if (delay != delayMs || jitter != jitterMs)
+            LOG("DEV: frame delay %lu ms (+ up to %lu ms jitter) before each game present", delay, jitter);
+        delayMs = delay; jitterMs = jitter;
+    }
+    if (!delayMs && !jitterMs) return;
+    seed = seed * 1664525u + 1013904223u;
+    Sleep(delayMs + (jitterMs ? (seed >> 8) % (jitterMs + 1) : 0));
+}
+#endif
+
 static HRESULT STDMETHODCALLTYPE PresentHook(IDXGISwapChain* sc, UINT syncInterval, UINT flags)
 {
     const bool topLevel = (g_presentDepth++ == 0);
@@ -3900,6 +3942,9 @@ static HRESULT STDMETHODCALLTYPE PresentHook(IDXGISwapChain* sc, UINT syncInterv
     LARGE_INTEGER hookStart{};
     if (runVrFrame)
     {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        DevFrameDelay();
+#endif
         CheckSessionDeviceHealth();
         HookCostFrame();
         TitleReentryProbe_PublishPresentCaller(_ReturnAddress(), GetTickCount64());
@@ -3941,6 +3986,9 @@ static HRESULT STDMETHODCALLTYPE Present1Hook(IDXGISwapChain1* sc, UINT syncInte
     LARGE_INTEGER hookStart{};
     if (runVrFrame)
     {
+#if HALOMCCVR_DEV_DIAGNOSTICS
+        DevFrameDelay();
+#endif
         CheckSessionDeviceHealth();
         HookCostFrame();
         TitleReentryProbe_PublishPresentCaller(_ReturnAddress(), GetTickCount64());

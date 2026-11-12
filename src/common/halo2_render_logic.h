@@ -3114,6 +3114,47 @@ constexpr bool Halo2SaberViewSlotsIntact(uint32_t seenFilled, uint32_t filledNow
 {
     return (seenFilled & ~filledNow) == 0;
 }
+// The slot reader itself: 0x4719B0(rcx, list, r8, r9, group, half) draws each view of `list` (count +0x10, 16-byte
+// entries at +8, each naming its slot offset at +8) into slot offset + half*2 + group*4, reading that slot's pointer
+// (0x471E59) and handing it, unchecked, to 0x1073B0. A slot emptied after the scene pass began, so after any check
+// made before it, faults there (Outskirts' mid-level load on build 9cca71f0, with every slot read filled just before
+// the pass). Its four callers ignore the return value. The bytes pin the entry and the index arithmetic.
+inline constexpr uint32_t kHalo2SaberViewTargetsDrawRva = 0x004719B0;
+inline constexpr uint8_t kHalo2SaberViewTargetsDrawEntryBytes[] = {
+    0x48, 0x8B, 0xC4, 0x48, 0x89, 0x58, 0x20, 0x55, 0x56, 0x57, 0x41, 0x54, 0x41, 0x55, 0x41, 0x56, 0x41, 0x57};
+// 0x471E20: movzx eax, byte [rbp+0x1B8] (half); lea rdx, [rip-...] (image base); lea rcx, [rax+rdi*2]; add rcx, rcx.
+inline constexpr uint32_t kHalo2SaberViewTargetsIndexRva = 0x00471E20;
+inline constexpr uint8_t kHalo2SaberViewTargetsIndexBytes[] = {
+    0x0F, 0xB6, 0x85, 0xB8, 0x01, 0x00, 0x00, 0x48, 0x8D, 0x15, 0xD2, 0xE1, 0xB8, 0xFF, 0x48, 0x8D, 0x0C, 0x78,
+    0x48, 0x03, 0xC9};
+// 0x471E40: the per-view read: entries [r15+8], slot offset [entry+8], slot index * 0x4E0, pointer at +0x1DFF858.
+inline constexpr uint32_t kHalo2SaberViewTargetsReadRva = 0x00471E40;
+inline constexpr uint8_t kHalo2SaberViewTargetsReadBytes[] = {
+    0x49, 0x8B, 0x7F, 0x08, 0x41, 0x8B, 0x44, 0x3E, 0x08, 0x48, 0x03, 0xC1, 0x48, 0x8B, 0xCE, 0x48, 0x69, 0xD8,
+    0xE0, 0x04, 0x00, 0x00, 0x48, 0x8B, 0x06, 0x48, 0x8B, 0x94, 0x13, 0x58, 0xF8, 0xDF, 0x01};
+inline constexpr uint32_t kHalo2SaberViewListEntriesOffset = 0x08;
+inline constexpr uint32_t kHalo2SaberViewListCountOffset = 0x10;
+inline constexpr uint32_t kHalo2SaberViewListEntryStride = 0x10;
+inline constexpr uint32_t kHalo2SaberViewListEntrySlotOffset = 0x08;
+// The slot the draw reads for a view whose entry names `slotOffset`, as the game computes it (64-bit, the group sign
+// extended); kHalo2SaberViewSlotCount or more when the arguments name no slot of the table.
+constexpr uint64_t Halo2SaberViewTargetSlot(uint32_t slotOffset, int32_t group, uint8_t half) noexcept
+{
+    const int64_t index = static_cast<int64_t>(slotOffset) +
+        (static_cast<int64_t>(half) + static_cast<int64_t>(group) * 2) * 2;
+    return index < 0 ? UINT64_MAX : static_cast<uint64_t>(index);
+}
+// The pointer the draw reads for that view, as an offset from halo2.dll's base, exactly as 0x471E40 computes it:
+// the slot offset zero-extended, the rest sign-extended, times 0x4E0, from the table's pointer field -- wrapping as the
+// game's arithmetic does, so a slot outside the twelve is the address the game would read too (2026-11-11: a guard
+// that let such a view through still faulted at +0x107449 during a load).
+constexpr uint64_t Halo2SaberViewTargetPointerOffset(uint32_t slotOffset, int32_t group, uint8_t half) noexcept
+{
+    const uint64_t index = static_cast<uint64_t>(slotOffset) +
+        static_cast<uint64_t>((static_cast<int64_t>(half) + static_cast<int64_t>(group) * 2) * 2);
+    return static_cast<uint64_t>(kHalo2SaberViewSlotsRva + kHalo2SaberViewSlotPointerOffset) +
+        index * kHalo2SaberViewSlotStride;
+}
 // Its callers zero this span of the render context before every call.
 inline constexpr uint32_t kHalo2SaberSceneContextResetOffset = 0x10;
 inline constexpr uint32_t kHalo2SaberSceneContextResetBytes = 0xC8;

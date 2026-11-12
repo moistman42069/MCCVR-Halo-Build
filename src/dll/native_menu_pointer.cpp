@@ -24,6 +24,10 @@ std::atomic<unsigned> moveCount{0}, clickCount{0};
 std::atomic<unsigned> restingCount{0}, foreignMoves{0};
 std::atomic<unsigned> cursorFailures{0};
 std::atomic<const char*> frameStatus{"no-screen"}, deliveryStatus{"idle"};
+std::atomic<HWND> coveredBy{nullptr}; // the window last found over the game's at the pointed point
+// The ray is on the game's screen but another window covers the point: nothing is sent, and the pad stays the
+// pointer's (NativeMenuPointer_ConsumesTrigger), so the trigger and stick do not reach the menu as its own buttons.
+std::atomic<bool> pointCovered{false};
 std::atomic<float> scrollStick{0.0f};
 // All remaining state belongs exclusively to MCC's window thread.
 game_menu_pointer::Pointer pointer;
@@ -116,17 +120,27 @@ void Apply()
     const bool allowed = Allowed() && GetClientRect(window, &client);
     const auto result = pointer.Update(sample.load(std::memory_order_acquire),
         GetTickCount(), allowed, client.right-client.left, client.bottom-client.top);
-    if (!result.move) { deliveryStatus.store(allowed ? "inactive-ray" : "focus-or-menu-gate"); Cancel(); return; }
+    if (!result.move) {
+        pointCovered.store(false, std::memory_order_release);
+        deliveryStatus.store(allowed ? "inactive-ray" : "focus-or-menu-gate"); Cancel(); return;
+    }
     // Do not take over a physical mouse drag. An injected down is tracked
     // separately and always balanced on miss, focus loss, F1 or stale input.
-    if (!mouseDown && (GetAsyncKeyState(VK_LBUTTON) & 0x8000)) { deliveryStatus.store("physical-drag"); Cancel(); return; }
+    if (!mouseDown && (GetAsyncKeyState(VK_LBUTTON) & 0x8000)) {
+        pointCovered.store(false, std::memory_order_release);
+        deliveryStatus.store("physical-drag"); Cancel(); return;
+    }
     POINT target{result.x, result.y};
     if (!ClientToScreen(window, &target)) { Cancel(); Fault(); return; }
     const bool posted = PostsMessages();
     if (!posted) {
         // A message goes to the window whatever covers it; the cursor's click goes to what is under it.
         const HWND under = WindowFromPoint(target);
-        if (under != window && !IsChild(window, under)) { deliveryStatus.store("window-covered"); Cancel(); return; }
+        if (under != window && !IsChild(window, under)) {
+            coveredBy.store(under, std::memory_order_relaxed);
+            pointCovered.store(true, std::memory_order_release);
+            deliveryStatus.store("window-covered"); Cancel(); return;
+        }
     }
     if (!timer) timer = SetTimer(nullptr, 0, 50, Watchdog);
     if (!timer) { Cancel(); Fault(); return; }
@@ -186,6 +200,7 @@ void Apply()
                 LOG("game menu pointer: wheel %d/%d notch at %d,%d of %dx%d", steps, kWheelStepsPerNotch,
                     int(result.x), int(result.y), int(client.right-client.left), int(client.bottom-client.top));
         }
+        pointCovered.store(false, std::memory_order_release);
         deliveryStatus.store("delivered");
         visual.store(game_menu_pointer::Pack(GetTickCount(), true,
             float(result.x) / (client.right-client.left),
@@ -221,7 +236,7 @@ void NativeMenuPointer_PublishScroll(float stick)
 }
 bool NativeMenuPointer_ConsumesTrigger()
 {
-    return delivered.load(std::memory_order_acquire) && Allowed() &&
+    return (delivered.load(std::memory_order_acquire) || pointCovered.load(std::memory_order_acquire)) && Allowed() &&
         game_menu_pointer::FreshActive(sample.load(), GetTickCount());
 }
 void NativeMenuPointer_ReportFailures()
@@ -248,6 +263,30 @@ void NativeMenuPointer_ReportFailures()
                 LOG("game window: not in front (%ls, process %lu%s)", name, static_cast<unsigned long>(pid),
                     pid == GetCurrentProcessId() ? ", this game's" : "");
             }
+        }
+    }
+    // What covered the game's window where the pointer pointed, each time that changes: the pointer cannot use a
+    // point another window is over, since the cursor's click would go to that window.
+    if (const HWND covering = coveredBy.load(std::memory_order_relaxed)) {
+        static HWND lastCovering = nullptr;
+        if (covering != lastCovering) {
+            lastCovering = covering;
+            wchar_t name[64] = L"no class";
+            DWORD pid = 0;
+            GetClassNameW(covering, name, 64);
+            GetWindowThreadProcessId(covering, &pid);
+            wchar_t image[MAX_PATH] = L"";
+            if (const HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid)) {
+                DWORD size = MAX_PATH;
+                if (!QueryFullProcessImageNameW(process, 0, image, &size)) image[0] = 0;
+                CloseHandle(process);
+            }
+            const wchar_t* file = wcsrchr(image, L'\\');
+            RECT rect{};
+            GetWindowRect(covering, &rect);
+            LOG("game menu pointer: another window covers the game's where it points (%ls, process %lu %ls%s, "
+                "at %ld,%ld-%ld,%ld)", name, static_cast<unsigned long>(pid), file ? file + 1 : image,
+                pid == GetCurrentProcessId() ? ", this game's" : "", rect.left, rect.top, rect.right, rect.bottom);
         }
     }
     static DWORD lastReport = 0;

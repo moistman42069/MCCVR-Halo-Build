@@ -3,6 +3,7 @@
 #include "../src/dll/native_vr_actions.h"
 #include "../src/common/config.h"
 #include "../src/common/input_preset.h"
+#include "../src/common/default_controls.h"
 #include "default_controls_fixture.inl"
 #include "../src/common/roomscale_recenter_logic.h"
 #include "../src/common/weapon_interaction_logic.h"
@@ -349,6 +350,41 @@ void CheckInputPresets()
         riding.Apply(0,seated,automatic,native);
         Check(riding.Apply(Bit(PrimaryGrip)|Bit(A)|Bit(RightClick),seated,automatic,native)==0&&
             ExtraControlBits(kAutomaticRow)==0,"an Automatic row presses nothing of its own and takes no control");
+        // With the game's layout known, an Automatic row follows it: boost on the left trigger is pressed by the VR
+        // support trigger whatever the action rows press. An unknown layout leaves the rows as set.
+        {
+            ExtraTransports layout{};
+            layout[VehicleSecondary]=1u<<16;layout[FlyDown]=0x100;layout[ReloadLeft]=0x100;
+            const auto followed=EffectiveExtraBindings(automatic,layout,true);
+            Check(followed[VehicleSecondary][0].press==SupportTrigger&&followed[FlyDown][0].press==SupportGrip&&
+                followed[ReloadLeft][0].press==SupportGrip,"an Automatic row takes the VR control at the game's button");
+            Check(EffectiveExtraBindings(automatic,layout,false)==automatic,"an unknown layout leaves rows Automatic");
+            ExtraMapper boost;
+            boost.Apply(0,seated,followed,layout);
+            Check(boost.Apply(Bit(SupportTrigger),seated,followed,layout)==(1u<<16),
+                "boost presses the game's boost button on its own");
+            Check(boost.Apply(Bit(SupportTrigger),ContextBit(ExtraContext::OnFoot),followed,layout)==0,
+                "and only in a seat");
+            // Fire left weapon has no row of its own: Grenade's names it, and a row a file still gives it presses
+            // nothing (on the support trigger it threw a grenade under Halo 2's gun-gripped zoom).
+            ExtraBindings left=automatic;
+            left[FireLeft][0]=Input{kNoneHeld,SupportTrigger};
+            ExtraTransports leftLayout{};
+            leftLayout[FireLeft]=1u<<16;
+            ExtraMapper onFoot;
+            onFoot.Apply(0,ContextBit(ExtraContext::OnFoot),left,leftLayout);
+            Check(RetiredExtra(FireLeft)&&
+                onFoot.Apply(Bit(SupportTrigger),ContextBit(ExtraContext::OnFoot),left,leftLayout)==0&&
+                !ExtraBridgeOnly(left,leftLayout,Transports{},Overrides{},nullptr),
+                "Fire left weapon's old row presses nothing");
+            Check(std::strstr(ActionName(GameTitle::Halo2,Grenade),"left gun")&&
+                std::strstr(ActionName(GameTitle::Halo3,Grenade),"left gun")&&
+                !std::strstr(ActionName(GameTitle::Halo4,Grenade),"left gun"),
+                "Grenade's row names the left gun's fire where there is dual wielding");
+            ExtraBindings set=automatic;
+            set[VehicleSecondary][0]=Input{kNoneHeld,B};
+            Check(EffectiveExtraBindings(set,layout,true)[VehicleSecondary][0].press==B,"a row set by the player stays");
+        }
         // The other extra rows start Automatic, and each counts in its own context.
         bool automaticRows=true;
         for(unsigned a=BansheeTrick+1;a<ExtraCount;++a) automaticRows=automaticRows&&kExtraDefaults[a]==kAutomaticRow;
@@ -883,7 +919,8 @@ void CheckDirectContextPassthrough()
         "Halo 2 index 5 is labelled as touch_device, not pick up");
     for(const auto title:{GameTitle::Halo3,GameTitle::Halo3ODST,GameTitle::HaloReach,GameTitle::Halo4,GameTitle::HaloCE,GameTitle::Halo2})
         for(unsigned a=0;a<Count;++a)
-            if(!(title==GameTitle::Halo2&&a==Interact))
+            if(!(title==GameTitle::Halo2&&a==Interact)&&
+               !((title==GameTitle::Halo2||title==GameTitle::Halo3)&&a==Grenade))
                 Check(std::strcmp(ActionName(title,static_cast<Action>(a)),kNames[a])==0,"other labels unchanged");
 }
 // Project Reclaimer: Start and Back are the client's; an action read on either goes to the bridge (2026-11-07: Halo 3's
@@ -1015,6 +1052,68 @@ int main()
     ConfigSave();ConfigLoad(path.c_str());
     Check(g_config.vr_inputs[2][Jump]==jump&&g_config.vr_inputs[2][Fire].held[0]==SupportGrip&&
         g_config.vr_inputs[0]==DefaultInputs(GameTitle::Halo3),"a row's inputs survive save and reload");
+    // THE DEFAULT CONTROLS NAME EVERY ROW: none follows the player's flat MCC layout unless the player picks that.
+    {
+        bool named=true,triggerFree=true;
+        for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+        {
+            Overrides rows{};Inputs inputs{};ExtraBindings extra{};
+            default_controls::Rows(static_cast<GameTitle>(title+1),rows,inputs,extra);
+            for(const int row:rows) named=named&&row!=Automatic;
+            for(const auto& row:extra) for(const auto& input:row) named=named&&input.press!=Automatic;
+            // On foot the support trigger is Grenade's and, with the hand on the gun, Zoom's chord; an extra row of
+            // its own there presses its game button under the chord too (Halo 2's fire left threw a grenade).
+            for(unsigned action=0;action<ExtraCount;++action)
+                if(kExtraContexts[action]!=ExtraContext::Seat)
+                    for(const auto& input:extra[action]) triggerFree=triggerFree&&input.press!=SupportTrigger;
+        }
+        Check(named,"the default controls leave no row on Automatic");
+        Check(triggerFree,"no default on-foot extra row is on the support trigger");
+        Overrides rows{};Inputs inputs{};ExtraBindings extra{};
+        default_controls::Rows(GameTitle::Halo4,rows,inputs,extra);
+        Check(rows[Fire]==PrimaryTrigger&&rows[Jump]==A&&rows[SwitchWeapon]==Y&&
+            extra[VehicleSecondary][0].press==SupportTrigger&&extra[FlyUp][0].press==A,
+            "Halo 4's fire, jump, switch and boost are named");
+    }
+    // A file from when the default left rows on Automatic, VR Mappings on: those rows take the default's control, a
+    // row the player set stays. VR Mappings off keeps its rows.
+    {std::ofstream file(path);file<<"vr_inputs_version = 2\nvr_action_mapping = 1\nvr_bind_halo4_fire = 0\n"
+        "vr_bind_halo4_melee = 6\n";}
+    ConfigLoad(path.c_str());
+    Check(g_config.vr_bindings[3][Fire]==PrimaryTrigger&&g_config.vr_bindings[3][Melee]==A&&
+        g_config.vr_extra_bindings[3][VehicleSecondary][0].press==SupportTrigger,
+        "an old file's Automatic rows take the default controls'");
+    {std::ofstream file(path);file<<"vr_inputs_version = 2\nvr_action_mapping = 0\nvr_bind_halo4_fire = 0\n";}
+    ConfigLoad(path.c_str());
+    Check(g_config.vr_bindings[3][Fire]==Automatic,"with VR Mappings off an old file's rows stay as they were");
+    // From version 3 only what differs from the default controls is written, and Automatic is a choice kept.
+    {
+        Config scheme{};
+        default_controls::Apply(scheme);
+
+        for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+        {
+            g_config.vr_bindings[title]=scheme.vr_bindings[title];
+            g_config.vr_inputs[title]=scheme.vr_inputs[title];
+            g_config.vr_extra_bindings[title]=scheme.vr_extra_bindings[title];
+        }
+        g_config.vr_action_mapping=true;
+        g_config.vr_bindings[3][Fire]=Automatic;
+        g_config.vr_bindings[3][Jump]=B;
+        ConfigSave();
+        std::ifstream saved(path);
+        const std::string text((std::istreambuf_iterator<char>(saved)),std::istreambuf_iterator<char>());
+        size_t rowLines=0;
+        for(size_t at=text.find("\nvr_bind_");at!=std::string::npos;at=text.find("\nvr_bind_",at+1))
+            if(text.compare(at+1,13,"vr_bind_pause")) ++rowLines;
+        Check(rowLines==2&&text.find("vr_bind_halo4_fire = 0")!=std::string::npos&&
+            text.find("vr_bind_halo4_jump = 7")!=std::string::npos,"a file names only the rows a player changed");
+        ConfigLoad(path.c_str());
+        Check(g_config.vr_bindings[3][Fire]==Automatic&&g_config.vr_bindings[3][Jump]==B&&
+            g_config.vr_bindings[0]==scheme.vr_bindings[0]&&g_config.vr_inputs[2]==scheme.vr_inputs[2]&&
+            g_config.vr_extra_bindings[3]==scheme.vr_extra_bindings[3],
+            "the rest load as the default controls, and a chosen Automatic stays");
+    }
     // A file from before the rows held inputs: the right stick and the two Input combinations become inputs, once.
     {std::ofstream file(path);file<<"right_stick_crouch = 1\ngrip_contextual_trigger = 1\ntrigger_air_equipment = 1\n";}
     ConfigLoad(path.c_str());

@@ -53,6 +53,8 @@ namespace
     using CameraCommitFn = void(__fastcall*)(void*);
     using CameraRefreshRectFn = void(__fastcall*)(void*);
     using HostUiCallbackFn = void(__fastcall*)(void*);
+    // kHalo2SaberViewTargetsDrawRva: (rcx, view list, r8, r9, group, half); the two stack arguments pass through whole.
+    using ViewTargetsDrawFn = void(__fastcall*)(void*, void*, void*, void*, uint64_t, uint64_t);
 
     enum class CoreState : uint8_t { StockFallback = 0, CleanupRequired, Installed };
 
@@ -80,6 +82,15 @@ namespace
     // rebuild detour unifies with the world projection (0 = none).
     std::atomic<uintptr_t> g_originalRebuild{0};
     std::atomic<uintptr_t> g_originalHostUi{0};
+    // The view-target draw's trampoline (0 = not hooked: the pins did not match), and the draws it skipped because a
+    // slot they were about to read was empty; the last such slot and group for the cold report.
+    std::atomic<uintptr_t> g_originalViewTargets{0};
+    std::atomic<uint64_t> g_viewTargetSkips{0};
+    // The last skipped view: its list entry's slot offset and the draw's group and half.
+    std::atomic<uint32_t> g_viewTargetSkipSlot{0};
+    std::atomic<int32_t> g_viewTargetSkipGroup{0};
+    std::atomic<uint32_t> g_viewTargetSkipHalf{0};
+    uint64_t g_viewTargetSkipsReported = 0;
     std::atomic<uint64_t> g_nativeChudDraws{0};
     std::atomic<uint64_t> g_nativeChudFailures{0};
     std::atomic<uintptr_t> g_fpPatchRecord{0};
@@ -243,6 +254,7 @@ namespace
     void* g_sceneTarget = nullptr;
     void* g_rebuildTarget = nullptr;
     void* g_hostUiTarget = nullptr;
+    void* g_viewTargetsTarget = nullptr;
     CoreState g_coreState = CoreState::StockFallback;
     uint32_t g_rejectedGeneration = 0;
     uint32_t g_manualRecoveryGeneration = 0;
@@ -1494,6 +1506,64 @@ namespace
         }
     }
 
+    // Whether every pointer the view-target draw is about to read for `list` is there: the very address the game reads
+    // for each view (Halo2SaberViewTargetPointerOffset), inside the twelve slots or not. A list with no views is the
+    // game's to draw; one whose entries cannot be read, or a view whose pointer cannot be read or is empty, is not.
+    bool ViewTargetsPresent(uintptr_t base, uintptr_t list, int32_t group, uint8_t half, uint32_t& emptySlot) noexcept
+    {
+        int32_t count = 0;
+        uintptr_t entries = 0;
+        if (!ReadGuarded(list + kHalo2SaberViewListCountOffset, count) || count <= 0)
+            return true;
+        if (!ReadGuarded(list + kHalo2SaberViewListEntriesOffset, entries))
+            return false;
+        for (int32_t i = 0; i < count; ++i)
+        {
+            uint32_t slotOffset = 0;
+            uintptr_t pointer = 0;
+            if (!ReadGuarded(entries + static_cast<uintptr_t>(i) * kHalo2SaberViewListEntryStride +
+                                 kHalo2SaberViewListEntrySlotOffset, slotOffset) ||
+                !ReadGuarded(base + static_cast<uintptr_t>(Halo2SaberViewTargetPointerOffset(slotOffset, group, half)),
+                             pointer) || !pointer)
+            {
+                emptySlot = slotOffset;
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Every call of the view-target draw, the game's own passes and the eye passes alike: a group whose slot the game
+    // emptied mid-pass is not drawn this frame, where the draw would fault on it in game code.
+    __declspec(noinline) void __fastcall ViewTargetsDetour(
+        void* rcx, void* list, void* r8, void* r9, uint64_t group, uint64_t half)
+    {
+        const auto original = reinterpret_cast<ViewTargetsDrawFn>(
+            g_originalViewTargets.load(std::memory_order_acquire));
+        if (!original)
+            return;
+        g_activeCallbacks.fetch_add(1, std::memory_order_acq_rel);
+        __try
+        {
+            const uintptr_t base = g_moduleBase.load(std::memory_order_acquire);
+            uint32_t emptySlot = 0;
+            if (base && list &&
+                !ViewTargetsPresent(base, reinterpret_cast<uintptr_t>(list), static_cast<int32_t>(group),
+                                    static_cast<uint8_t>(half), emptySlot))
+            {
+                g_viewTargetSkipSlot.store(emptySlot, std::memory_order_relaxed);
+                g_viewTargetSkipGroup.store(static_cast<int32_t>(group), std::memory_order_relaxed);
+                g_viewTargetSkipHalf.store(static_cast<uint8_t>(half), std::memory_order_relaxed);
+                g_viewTargetSkips.fetch_add(1, std::memory_order_relaxed);
+            }
+            else
+            {
+                original(rcx, list, r8, r9, group, half);
+            }
+        }
+        __finally { g_activeCallbacks.fetch_sub(1, std::memory_order_acq_rel); }
+    }
+
     __declspec(noinline) void __fastcall SaberSceneDetour(
         void* ctx, void* rdx, uint32_t viewIndex)
     {
@@ -1548,10 +1618,20 @@ namespace
         }
     }
 
+    // The longest byte pin EntryBytesMatch compares; every pin it is given is held to it at compile time.
+    constexpr size_t kMaxPinnedBytes = 64;
+    static_assert(sizeof(kHalo2SaberViewTargetsDrawEntryBytes) <= kMaxPinnedBytes &&
+                  sizeof(kHalo2SaberViewTargetsIndexBytes) <= kMaxPinnedBytes &&
+                  sizeof(kHalo2SaberViewTargetsReadBytes) <= kMaxPinnedBytes &&
+                  sizeof(kHalo2SaberRebuildViewMatricesEntryBytes) <= kMaxPinnedBytes &&
+                  sizeof(kHalo2SaberCameraCommitEntryBytes) <= kMaxPinnedBytes &&
+                  sizeof(kHalo2SaberCameraRefreshRectEntryBytes) <= kMaxPinnedBytes &&
+                  sizeof(kHalo2SaberHostUiCallbackEntryBytes) <= kMaxPinnedBytes,
+                  "a byte pin is longer than EntryBytesMatch compares");
     bool EntryBytesMatch(
         uintptr_t address, const uint8_t* expected, size_t bytes) noexcept
     {
-        uint8_t actual[32]{};
+        uint8_t actual[kMaxPinnedBytes]{};
         if (!address || !expected || bytes == 0 || bytes > sizeof(actual))
             return false;
         if (!CopyGuarded(actual, reinterpret_cast<const void*>(address), bytes))
@@ -1665,7 +1745,42 @@ namespace
             return false;
         }
 
+        // The view-target draw's slot check is optional: unpinned or unhookable, the stereo runs without it, as before.
+        const uintptr_t viewTargets = base + kHalo2SaberViewTargetsDrawRva;
+        void* viewTargetsTrampoline = nullptr;
+        if (!IsExecutable(viewTargets) ||
+            !EntryBytesMatch(viewTargets, kHalo2SaberViewTargetsDrawEntryBytes,
+                             sizeof(kHalo2SaberViewTargetsDrawEntryBytes)) ||
+            !EntryBytesMatch(base + kHalo2SaberViewTargetsIndexRva, kHalo2SaberViewTargetsIndexBytes,
+                             sizeof(kHalo2SaberViewTargetsIndexBytes)) ||
+            !EntryBytesMatch(base + kHalo2SaberViewTargetsReadRva, kHalo2SaberViewTargetsReadBytes,
+                             sizeof(kHalo2SaberViewTargetsReadBytes)))
+        {
+            LOG("Halo 2 Anniversary view-target check WITHHELD: the draw +0x%X does not match the proven module; a "
+                "view target the game empties mid-frame is not caught",
+                static_cast<unsigned>(kHalo2SaberViewTargetsDrawRva));
+        }
+        else
+        {
+            const MH_STATUS createdViewTargets = MH_CreateHook(
+                reinterpret_cast<void*>(viewTargets),
+                reinterpret_cast<void*>(&ViewTargetsDetour), &viewTargetsTrampoline);
+            if (createdViewTargets != MH_OK || !viewTargetsTrampoline)
+            {
+                LOG("Halo 2 Anniversary view-target check WITHHELD: hook create=%d",
+                    static_cast<int>(createdViewTargets));
+                if (createdViewTargets == MH_OK)
+                    (void)MH_RemoveHook(reinterpret_cast<void*>(viewTargets));
+                viewTargetsTrampoline = nullptr;
+            }
+        }
+
         g_moduleReference = module;
+        g_viewTargetsTarget = viewTargetsTrampoline ? reinterpret_cast<void*>(viewTargets) : nullptr;
+        g_originalViewTargets.store(
+            reinterpret_cast<uintptr_t>(viewTargetsTrampoline), std::memory_order_release);
+        g_viewTargetSkips.store(0, std::memory_order_relaxed);
+        g_viewTargetSkipsReported = 0;
         g_sceneTarget = reinterpret_cast<void*>(scene);
         g_rebuildTarget = reinterpret_cast<void*>(rebuild);
         g_hostUiTarget = reinterpret_cast<void*>(hostUi);
@@ -1702,6 +1817,17 @@ namespace
             return false;
         }
         g_coreState = CoreState::Installed;
+        if (g_viewTargetsTarget)
+        {
+            const MH_STATUS enabledViewTargets = MH_EnableHook(g_viewTargetsTarget);
+            if (enabledViewTargets == MH_OK)
+                LOG("Halo 2 Anniversary view-target check installed: the draw +0x%X skips a view group for the frame "
+                    "when a target slot it reads was emptied (the mid-level load fault at +0x107449)",
+                    static_cast<unsigned>(kHalo2SaberViewTargetsDrawRva));
+            else
+                LOG("Halo 2 Anniversary view-target check WITHHELD: hook enable=%d",
+                    static_cast<int>(enabledViewTargets));
+        }
         if (Halo2NativeHud_Armed())
         {
             LOG("Halo 2 native gameplay HUD replay ON in Anniversary: each "
@@ -1732,6 +1858,17 @@ namespace
         if (now - g_lastReportMs < 2000)
             return;
         g_lastReportMs = now;
+        const uint64_t viewTargetSkips = g_viewTargetSkips.load(std::memory_order_relaxed);
+        if (viewTargetSkips != g_viewTargetSkipsReported)
+        {
+            g_viewTargetSkipsReported = viewTargetSkips;
+            LOG("Halo 2 Anniversary view-target check: %llu view groups not drawn because a target they read was "
+                "empty or unreadable (last: entry slot offset %u, group %d, half %u); each would have faulted at "
+                "+0x107449", static_cast<unsigned long long>(viewTargetSkips),
+                g_viewTargetSkipSlot.load(std::memory_order_relaxed),
+                g_viewTargetSkipGroup.load(std::memory_order_relaxed),
+                g_viewTargetSkipHalf.load(std::memory_order_relaxed));
+        }
         const uint64_t pairs = g_pairs.load(std::memory_order_relaxed);
         const uint64_t callbacks = g_callbacks.load(std::memory_order_relaxed);
         // Report on ANY movement, not just completed pairs. "Zero pairs" and

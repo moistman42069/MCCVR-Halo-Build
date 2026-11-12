@@ -260,4 +260,73 @@ struct OutcomeGate {
     }
 };
 
+// THE ON-FOOT ARM GATE'S PITCH, Halo 4 (legacy_direct_drive.inl). Before the hook ever writes the record it
+// must hold the game's own aim, the camera's forward: yaw and pitch within 1.7 deg for 30 updates in a row.
+// Halo 4's first-person camera sits a steady few degrees above the record's pitch for most of a session
+// (headset logs 2026-11-09, on foot: 5.3 to 7.5 deg in every Steam and Microsoft Store run through Link,
+// SteamVR and Virtual Desktop), so the pitch half passed only where the two happened to agree, which on most
+// runs is the moment after spawning. A session without such a moment (Store edition through Virtual Desktop,
+// every run) never armed; the servo then closed the CAMERA on the hand, and every shot landed that far below
+// the reticle. Yaw must still agree. The pitch may instead hold one offset, no larger than `max_offset`,
+// within `tolerance` for the whole run: a record that moves with the camera, a fixed angle apart.
+struct ArmPitchRun {
+    float offset = 0.0f;
+    bool started = false;
+
+    // One update. True while the run holds; false starts a new run at this sample (the caller's count
+    // restarts), or none when the offset is out of bounds.
+    bool step(float record_pitch, float aim_pitch, float tolerance, float max_offset)
+    {
+        const float d = record_pitch - aim_pitch;
+        if (!std::isfinite(d) || std::fabs(d) > max_offset) {
+            started = false;
+            return false;
+        }
+        if (started && std::fabs(d - offset) < tolerance)
+            return true;
+        offset = d;
+        started = true;
+        return false;
+    }
+};
+
+// THE SERVO'S PITCH ON FOOT (Halo 3, ODST, Halo 4; game.cpp). While the hook is not writing the record the
+// servo steers the game's aim onto the hand with the stick, reading that aim as the camera's forward. With
+// MCC's crosshair location not centred the camera sits a steady angle above the record (about 7 deg, headset
+// logs 2026-11-09), and the shots follow the record: closing the camera on the hand put every shot that far
+// below the reticle. The offset is the hook's own reading, record minus camera pitch, once it has held within
+// `tolerance` of one value for `need` updates in a row (the mean of that run). A turn's frame of lag between the
+// two breaks a run without moving the offset; it stays until another run replaces it. Larger than `max_offset`
+// is not this offset and starts no run.
+struct SteadyPitchOffset {
+    float value = 0.0f;   // the offset in force, rad
+    float first = 0.0f;
+    float sum = 0.0f;
+    uint32_t run = 0;
+
+    // One update's record minus camera pitch. True when the offset in force moved by `tolerance` or more.
+    bool step(float offset, float tolerance, float max_offset, uint32_t need)
+    {
+        if (!std::isfinite(offset) || std::fabs(offset) > max_offset) {
+            run = 0;
+            return false;
+        }
+        if (run == 0 || std::fabs(offset - first) >= tolerance) {
+            first = sum = offset;
+            run = 1;
+            return need <= 1 && adopt(offset, tolerance);
+        }
+        sum += offset;
+        return ++run == need && adopt(sum / static_cast<float>(run), tolerance);
+    }
+
+private:
+    bool adopt(float mean, float tolerance)
+    {
+        const bool moved = std::fabs(mean - value) >= tolerance;
+        value = mean;
+        return moved;
+    }
+};
+
 } // namespace seat_drive

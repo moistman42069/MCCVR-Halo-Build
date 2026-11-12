@@ -195,8 +195,8 @@ std::string Serialize(const Config& scheme)
             text += line;
         }
     // The rows' inputs (vr_mapping::FormatInput): a row's further ones only where they differ from its game's start, all
-    // three then (Parse starts from that start).
-    text += "vr_inputs_version = 2\n";
+    // three then (Parse starts from that start). Version 3: a row on Automatic was chosen, not left from the default.
+    text += "vr_inputs_version = 3\n";
     char input[32];
     for (unsigned title = 0; title < weapon_interaction::kTitleCount; ++title)
     {
@@ -338,6 +338,9 @@ void Parse(const char* text, Config& out)
             vr_mapping::ConvertSettingsToInputs(out.vr_inputs[title], static_cast<GameTitle>(title + 1), stick, gunZoom,
                                                 airEquipment);
     if (inputsVersion < 2 && !yb) out.vr_mod_bindings[vr_mapping::Pause] = {};
+    // A preset saved when the default controls left rows on Automatic: those rows take the default's own control
+    // (default_controls::FillAutomatic), as halomccvr.cfg's do. VR Mappings off keeps its rows.
+    if (inputsVersion < 3 && out.vr_action_mapping) default_controls::FillAutomatic(out);
     // Within the ranges halomccvr.cfg keeps them in.
     const Config defaults{};
     out.roomscale_follow_law = out.roomscale_follow_law != 0 ? 1 : 0;

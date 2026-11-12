@@ -23,7 +23,9 @@ inline constexpr const char* kKeys[Count]{"fire","grenade","jump","melee","reloa
 inline constexpr const char* kNames[Count]{"Fire","Grenade / secondary fire","Jump","Melee",
     "Reload","Use / pick up","Switch weapon","Switch grenade","Equipment / ability",
     "Crouch","Zoom","Flashlight / night vision","Sprint"};
-inline constexpr const char* kSourceNames[SourceCount]{"Automatic","Unbound","Primary trigger",
+// Automatic shows as what it does: the row follows the player's own MCC controller layout. The default controls name
+// a control for every row (default_controls.h), so it is only ever a player's choice.
+inline constexpr const char* kSourceNames[SourceCount]{"Follow my MCC layout","Unbound","Primary trigger",
     "Support trigger","Primary grip","Support grip","Right A / lower face","Right B / upper face",
     "Left X / lower face","Left Y / upper face","Left stick / pad click","Right stick / pad click",
     "D-pad gesture up","D-pad gesture down","D-pad gesture left","D-pad gesture right",
@@ -510,6 +512,11 @@ inline constexpr ExtraContext kExtraContexts[ExtraCount]{ExtraContext::Seat,Extr
     ExtraContext::OnFoot,ExtraContext::OnFoot,ExtraContext::OnFoot,ExtraContext::OnFoot,ExtraContext::Seat,
     ExtraContext::Seat,ExtraContext::Seat,ExtraContext::Seat,ExtraContext::Anywhere,ExtraContext::Anywhere,
     ExtraContext::Seat};
+// A row no longer offered: Fire left weapon is Grenade's left trigger in Halo 3 and Halo 2, the left gun firing while
+// dual wielding, so it goes with Grenade's row (ActionName says so) and cannot be put on other controls. A row of its own
+// on the support trigger pressed that button under the gun-gripped zoom chord too: Halo 2's Aim Frame Zoom threw a
+// grenade. Its key stays in kExtraKeys so old files still parse; nothing presses it and the menu does not show it.
+inline constexpr bool RetiredExtra(ExtraAction action) noexcept { return action==FireLeft; }
 using ExtraRow=std::array<Input,kRowInputs>;
 using ExtraBindings=std::array<ExtraRow,ExtraCount>;
 using ExtraTransports=std::array<uint32_t,ExtraCount>;
@@ -604,7 +611,7 @@ struct ExtraMapper
         for(unsigned a=0;a<ExtraCount;++a)
         {
             const unsigned c=static_cast<unsigned>(kExtraContexts[a]);
-            if(!live[c]) continue;
+            if(!live[c]||RetiredExtra(static_cast<ExtraAction>(a))) continue;
             for(unsigned i=0;i<kRowInputs;++i)
             {
                 const auto& input=bindings[a][i];
@@ -625,6 +632,21 @@ struct ExtraMapper
         return buttons;
     }
 };
+
+// An extra row on Automatic follows the game's own button for its action, as an action row does (EffectiveOverrides):
+// its own input becomes the VR control at that button's place. Once it pressed nothing and its action waited on an
+// action row sending the same button -- a vehicle's boost (Halo 4's and a Mantis's missiles too) rode Grenade's left
+// trigger, and was lost with a layout or a mapping that moved Grenade. Until the layout is known the rows stay as set.
+inline ExtraBindings EffectiveExtraBindings(const ExtraBindings& bindings,const ExtraTransports& layout,
+    bool layoutKnown) noexcept
+{
+    ExtraBindings effective=bindings;
+    if(layoutKnown)
+        for(unsigned x=0;x<ExtraCount;++x)
+            for(auto& input:effective[x])
+                if(input.press==Automatic) input.press=LayoutSource(layout[x]);
+    return effective;
+}
 
 // An extra row's inputs as one number, the way InputsSignature numbers an action row's: an Automatic own input is none.
 inline uint64_t ExtraInputsSignature(const ExtraRow& row) noexcept
@@ -651,6 +673,7 @@ inline uint32_t ExtraBridgeOnly(const ExtraBindings& extra,const ExtraTransports
     uint32_t only=0;
     for(unsigned x=0;x<ExtraCount;++x)
     {
+        if(RetiredExtra(static_cast<ExtraAction>(x))) continue;
         if(!ExtraControlBits(extra[x])) continue;   // Automatic, or nothing: the game's own button
         const uint32_t button=extraNative[x];
         if(!button) continue;

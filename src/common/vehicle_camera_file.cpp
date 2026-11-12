@@ -1338,6 +1338,22 @@ Vehicle AlsoMatching(Vehicle vehicle, const char* match)
     return vehicle;
 }
 
+// The entry with its seat view (always its first camera) moved `forward`, `right` and `up` cm off the seat's eye.
+Vehicle SeatMoved(Vehicle vehicle, float forward, float right, float up)
+{
+    vehicle.cameras[0].offset[0] = forward;
+    vehicle.cameras[0].offset[1] = right;
+    vehicle.cameras[0].offset[2] = up;
+    return vehicle;
+}
+
+// The entry with `camera` placed at `at` in its list, ahead of the cameras from there on.
+Vehicle WithCameraAt(Vehicle vehicle, std::size_t at, Camera camera)
+{
+    vehicle.cameras.insert(vehicle.cameras.begin() + static_cast<std::ptrdiff_t>(at), std::move(camera));
+    return vehicle;
+}
+
 // Mod maps' own vehicles, with cameras tuned in play: read by this file's own reader, so they are written exactly as
 // a player's file would have them. A stock vehicle has its entry above.
 constexpr char kModVehicles[] = R"json({ "version": 1, "games": { "halo3": { "vehicles": {
@@ -1630,35 +1646,36 @@ Table DefaultTable()
     // origin is the occupant's head where it settled in the seat, so the seat cameras stand off it as Halo 3's stand
     // off its seat eye. The Warthog's front seats look over the occupant's own shoulder from straight behind and well
     // above it (placed from pictures in game): nearer the hull's centre line its gun and roll bar fill the view.
+    // The Warthog's front seats, the Ghost, the Banshee, the Scorpion and the Wraith are as tuned in the headset
+    // (2026-11-11): the Ghost's, the Scorpion's and the Wraith's seat views moved off the occupant's eye, and the
+    // Wraith's own camera over its cannon ahead of the game's.
     Game halo2;
     halo2.key = kGameKeys[4];
     halo2.vehicles = {
-        Entry("Warthog", "warthog", driver,
-              {Chase("Over the Shoulder", Origin::Seat, -250, 0, 140, true, 0.15f),
-               Chase("Left Side", Origin::Seat, 0, -140, 40, true, 0.0f)}),
+        Entry("Warthog", "warthog", driver, {Chase("Left Side", Origin::Seat, 0, -140, 40, true, 0.0f)}),
         Entry("Warthog passenger", "warthog", passenger,
-              {Chase("Over the Shoulder", Origin::Seat, -250, 0, 140, true, 0.15f),
-               Chase("Right Side", Origin::Seat, 0, 140, 40, true, 0.0f)}),
+              {Chase("Right Side", Origin::Seat, 0, 140, 40, true, 0.0f)}),
         Entry("Warthog gunner", "warthog", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
         Entry("Mongoose", "mongoose", driver, {Chase("Over the Shoulder", Origin::Seat, -170, 80, 70, true, 0.15f)}),
         Entry("Mongoose passenger", "mongoose", passenger,
               {Chase("Over the Shoulder", Origin::Seat, -170, -80, 70, true, 0.15f)}),
-        Entry("Ghost", "ghost", driver,
-              {Chase("Follow", Origin::Vehicle, -450, 0, 220, true, 0.25f),
-               Chase("Over the Shoulder", Origin::Vehicle, -10, 60, 135, true, 0.1f)}),
+        SeatMoved(Entry("Ghost", "ghost", driver,
+                        {Chase("Over the Shoulder", Origin::Vehicle, -100, 80, 100, true, 0.1f)}),
+                  0, 0, 50),
         Entry("Spectre", "spectre", driver, {Chase("Follow", Origin::Vehicle, -500, 0, 250, true, 0.25f)}),
         Entry("Spectre passenger", "spectre", passenger,
               {Chase("Over the Shoulder", Origin::Seat, -170, -80, 80, true, 0.15f)}),
         Entry("Spectre gunner", "spectre", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
         Entry("Banshee", "banshee", driver,
-              {Chase("Over the Shoulder", Origin::Vehicle, -350, 150, 200, false, 0.2f),
-               Chase("Chase", Origin::Vehicle, -600, 0, 150, false, 0.3f)}),
-        Entry("Scorpion", "scorpion", driver, {Chase("High", Origin::Vehicle, -700, 0, 700, true, 0.3f)}),
+              {Chase("Over the Shoulder", Origin::Vehicle, -150, 150, 200, false, 0.2f)}),
+        SeatMoved(Entry("Scorpion", "scorpion", driver, {}), 120, 0, 20),
         Entry("Scorpion passenger", "scorpion", passenger,
               {Chase("Over the Shoulder", Origin::Seat, -200, 0, 120, true, 0.15f)}),
         Entry("Scorpion gunner", "scorpion", gunner,
               {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
-        Entry("Wraith", "wraith", driver, {Chase("High", Origin::Vehicle, -700, 100, 700, true, 0.3f)}),
+        SeatMoved(WithCameraAt(Entry("Wraith", "wraith", driver, {}), 1,
+                               Chase("Cannon", Origin::Vehicle, -100, 0, 150, true, 0.3f)),
+                  0, 0, 100),
         Entry("Wraith gunner", "wraith", gunner, {Chase("Behind the Gun", Origin::Seat, -150, 0, 60, true, 0.1f)}),
         AlsoMatching(Entry("Turret", "turret", 0, {Chase("Behind the Gun", Origin::Seat, -150, 0, 50, true, 0.1f)}),
                      "guntower"),

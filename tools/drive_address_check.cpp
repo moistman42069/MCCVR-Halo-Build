@@ -1,4 +1,6 @@
-// THE OFFLINE CHECK OF THE DIRECT DRIVES' ADDRESSES, against the game's own DLL files. No game, no headset.
+// THE OFFLINE CHECK OF THE DIRECT DRIVES' ADDRESSES, against the game's own DLL files. No game, no headset. The
+// centred crosshair's fills (src/common/centred_crosshair_sites.h) are found by the same cascade and are checked here
+// as six more "drives", one per title; their "hook" is the first fill's instruction, which the install patches.
 //
 //   halomccvr_drive_address_check --mcc "<the MCC install folder>" [--faults] [--moved] [--title <dll name>] [--brief]
 //                                 [--loaded <a scratch folder>]
@@ -63,6 +65,7 @@
 #include <vector>
 
 #include "addrcascade/AddressCascade.hpp"
+#include "centred_crosshair_sites.h"
 #include "drive_sites.h"
 #include "title_build_identity.h"
 #include "config.h"
@@ -338,6 +341,7 @@ struct Outcome
     drive_sites::ReachSabre sabre{};
     drive_sites::Halo4Flight halo4Flight{};
     drive_sites::Halo2Control halo2{};
+    centred_crosshair_sites::Resolved crosshair{};
 };
 
 using RunFn = void (*)(Resolver&, Outcome&);
@@ -458,6 +462,26 @@ void RunT13Halo4(Resolver& r, Outcome& out)
     RunT13(r, out, drive_sites::kT13Halo4Anchors, drive_sites::kT13Halo4Flight, drive_sites::kT13Halo4Sites);
 }
 
+// THE CENTRED CROSSHAIR (src/common/centred_crosshair_sites.h): not a drive, but its fills are found by the same
+// cascade, so they are checked with the drives. Its "hook" is the first fill's instruction.
+void RunCrosshair(Resolver& r, Outcome& out, const centred_crosshair_sites::TitleSites& t)
+{
+    out.crosshair = centred_crosshair_sites::Resolve(r, t);
+    out.ok = out.crosshair.fills;
+    out.hook = out.crosshair.at[0];
+    if (t.profiles.caller.pattern)
+        std::snprintf(out.detail, sizeof(out.detail), "%u fill(s) at +0x%X +0x%X; profiles +0x%X, stride 0x%X",
+                      t.fillCount, out.crosshair.at[0], out.crosshair.at[1], out.crosshair.array, out.crosshair.stride);
+    else
+        std::snprintf(out.detail, sizeof(out.detail), "centred check at +0x%X", out.crosshair.at[0]);
+}
+void RunCrosshairHalo3(Resolver& r, Outcome& out) { RunCrosshair(r, out, centred_crosshair_sites::kHalo3); }
+void RunCrosshairOdst(Resolver& r, Outcome& out) { RunCrosshair(r, out, centred_crosshair_sites::kOdst); }
+void RunCrosshairReach(Resolver& r, Outcome& out) { RunCrosshair(r, out, centred_crosshair_sites::kReach); }
+void RunCrosshairHalo4(Resolver& r, Outcome& out) { RunCrosshair(r, out, centred_crosshair_sites::kHalo4); }
+void RunCrosshairHaloCE(Resolver& r, Outcome& out) { RunCrosshair(r, out, centred_crosshair_sites::kHaloCE); }
+void RunCrosshairHalo2(Resolver& r, Outcome& out) { RunCrosshair(r, out, centred_crosshair_sites::kHalo2); }
+
 // THE INSTALL'S OWN DECISION on a module as the loader maps it: the functions of src/dll/drive_install.h that the
 // DLL's install calls once its plan has run. `hook`: the install would hook. `whole`: and everything it proves
 // beyond the hook (a control update's caller map) is proven. `legacyTls`: where Halo 4's control update drive
@@ -543,6 +567,51 @@ InstallVerdict InstallHalo2(uintptr_t base, size_t size, const Outcome& out, uin
     return {d.hook, d.hook};
 }
 
+// The crosshair install's decision (src/dll/centred_crosshair.inl): every fill found, and the game's own bytes there
+// the stock instruction, ready to be patched. `whole`: the profiles already filled were found too.
+InstallVerdict InstallCrosshair(const centred_crosshair_sites::TitleSites& t, uintptr_t base, const Outcome& out,
+                                char* text, size_t n)
+{
+    bool hook = out.crosshair.fills;
+    for (uint32_t i = 0; hook && i < t.fillCount; ++i)
+    {
+        uint8_t centred[centred_crosshair::kMostPatchBytes]{};
+        size_t length = 0;
+        bool patched = true;
+        hook = centred_crosshair::CentredBytes(t.fills[i].patch, reinterpret_cast<const uint8_t*>(base + out.crosshair.at[i]),
+                                               centred, length, patched) &&
+               !patched;
+    }
+    const bool profiles = !t.profiles.caller.pattern || (out.crosshair.array && out.crosshair.stride);
+    std::snprintf(text, n, "fills %s; profiles %s", hook ? "stock and ready" : "NOT ready",
+                  !t.profiles.caller.pattern ? "none of its own" : profiles ? "found" : "NOT found");
+    return {hook, hook && profiles};
+}
+InstallVerdict InstallCrosshairHalo3(uintptr_t base, size_t, const Outcome& out, uintptr_t, char* text, size_t n)
+{
+    return InstallCrosshair(centred_crosshair_sites::kHalo3, base, out, text, n);
+}
+InstallVerdict InstallCrosshairOdst(uintptr_t base, size_t, const Outcome& out, uintptr_t, char* text, size_t n)
+{
+    return InstallCrosshair(centred_crosshair_sites::kOdst, base, out, text, n);
+}
+InstallVerdict InstallCrosshairReach(uintptr_t base, size_t, const Outcome& out, uintptr_t, char* text, size_t n)
+{
+    return InstallCrosshair(centred_crosshair_sites::kReach, base, out, text, n);
+}
+InstallVerdict InstallCrosshairHalo4(uintptr_t base, size_t, const Outcome& out, uintptr_t, char* text, size_t n)
+{
+    return InstallCrosshair(centred_crosshair_sites::kHalo4, base, out, text, n);
+}
+InstallVerdict InstallCrosshairHaloCE(uintptr_t base, size_t, const Outcome& out, uintptr_t, char* text, size_t n)
+{
+    return InstallCrosshair(centred_crosshair_sites::kHaloCE, base, out, text, n);
+}
+InstallVerdict InstallCrosshairHalo2(uintptr_t base, size_t, const Outcome& out, uintptr_t, char* text, size_t n)
+{
+    return InstallCrosshair(centred_crosshair_sites::kHalo2, base, out, text, n);
+}
+
 struct Drive
 {
     const char* dll;
@@ -582,6 +651,20 @@ constexpr Drive kDrives[] = {
     // The observer's IDLE and RECUNIT rows stand more than once in their functions: the observer stays off.
     {"halo4", "pilot-observer", "Halo 4 pilot controller, dev observer (dev builds only)", &RunT13Halo4, true, false,
      {"IDLE", "RECUNIT"}, nullptr, drive_cascade::kHalo4ObserverName, -1, true},
+    // The centred crosshair: each fill by its whole signature and by its core in its function, so denying the cores
+    // their offset leaves the whole signatures to carry it.
+    {"halo1", "crosshair", "Halo CE centred crosshair", &RunCrosshairHaloCE, false, true, {}, &InstallCrosshairHaloCE,
+     centred_crosshair_sites::kHaloCE.logName, -1, false},
+    {"halo2", "crosshair", "Halo 2 centred crosshair", &RunCrosshairHalo2, false, true, {}, &InstallCrosshairHalo2,
+     centred_crosshair_sites::kHalo2.logName, -1, false},
+    {"halo3", "crosshair", "Halo 3 centred crosshair", &RunCrosshairHalo3, false, true, {}, &InstallCrosshairHalo3,
+     centred_crosshair_sites::kHalo3.logName, -1, false},
+    {"halo3odst", "crosshair", "ODST centred crosshair", &RunCrosshairOdst, false, true, {}, &InstallCrosshairOdst,
+     centred_crosshair_sites::kOdst.logName, -1, false},
+    {"haloreach", "crosshair", "Reach centred crosshair", &RunCrosshairReach, false, true, {}, &InstallCrosshairReach,
+     centred_crosshair_sites::kReach.logName, -1, false},
+    {"halo4", "crosshair", "Halo 4 centred crosshair", &RunCrosshairHalo4, false, true, {}, &InstallCrosshairHalo4,
+     centred_crosshair_sites::kHalo4.logName, -1, false},
 };
 
 // What the drive's lines begin with in the log: the name its install gives it.

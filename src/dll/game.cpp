@@ -1,4 +1,6 @@
 #include "../common/legacy_weapon_visual_defaults.h"
+#include "../common/fp_arm_fallback_logic.h"
+#include "../common/held_controller_pose.h"
 #include "../common/reach_weapon_defaults.h"
 #include "../common/visual_aim.h"
 #include "../common/weapon_alignment.h"
@@ -300,6 +302,7 @@ extern "C" void LegacyPcApplyForUser(int slot, int user, uintptr_t ret, const ui
 bool LegacyDriveInstall(GameTitle title, uintptr_t base, size_t size);
 bool LegacyDriveRemove(GameTitle title);
 bool LegacyDriveLive(GameTitle title);
+float LegacyDriveFootPitchOffset(GameTitle title);
 void LegacyDriveReport();
 // Halo 3's own hooks, each watched for "installed but never called" (halo3_hook_watch.inl). Cold worker, every loop.
 void Halo3HookWatchReport(uint64_t nowMs);
@@ -368,6 +371,7 @@ bool Halo4Type13LogInstall(uintptr_t base, size_t size, uint32_t generation);
 #include "../common/aim_write_logic.h"
 #include "../common/aim_caller_logic.h"
 #include "../common/seat_drive_policy.h"
+#include "../common/centred_crosshair_sites.h"
 #include "../common/gun_slaved_seat_logic.h"
 #include "../common/seat_upstream_logic.h"
 #include "../common/vehicle_gun_band_logic.h"
@@ -725,6 +729,9 @@ namespace
     std::atomic<uint32_t> g_aimFrameWidgets{0}, g_aimFrameCrosshairAsks{0};
     std::atomic<uint64_t> g_gameZoomMs{0};
     std::atomic<uint32_t> g_gameZoomGeneration{0};
+    // When the zoom now noted began (GetTickCount64): the note that took it from not zoomed, or from another title or
+    // generation, to a zoom level.
+    std::atomic<uint64_t> g_gameZoomSinceMs{0};
     const char* AimFrameTitleName(GameTitle title)
     {
         switch (title)
@@ -740,9 +747,12 @@ namespace
     void NoteGameZoomLevel(GameTitle title, int16_t level, uint32_t generation)
     {
         const int previous = g_gameZoomLevel.exchange(level, std::memory_order_relaxed);
-        g_gameZoomTitle.store(static_cast<int>(title), std::memory_order_relaxed);
-        g_gameZoomGeneration.store(generation, std::memory_order_relaxed);
-        g_gameZoomMs.store(GetTickCount64(), std::memory_order_release);
+        const int previousTitle = g_gameZoomTitle.exchange(static_cast<int>(title), std::memory_order_relaxed);
+        const uint32_t previousGeneration = g_gameZoomGeneration.exchange(generation, std::memory_order_relaxed);
+        const uint64_t now = GetTickCount64();
+        if (level >= 0 && (previous < 0 || previousTitle != static_cast<int>(title) || previousGeneration != generation))
+            g_gameZoomSinceMs.store(now, std::memory_order_relaxed);
+        g_gameZoomMs.store(now, std::memory_order_release);
         if (previous != level && g_config.aim_frame_zoom)
             LOG("%s zoom: the game's zoom level is %d%s", AimFrameTitleName(title), static_cast<int>(level),
                 level < 0 ? " (not zoomed)" : "");
@@ -2538,6 +2548,9 @@ namespace
     // palette hook matches its `source` pointer against both, so any
     // interpolate/palette call ordering pairs correctly.
     thread_local FpInterpolationContext g_fpInterpolationContexts[2];
+    // Why each Halo 3 first-person palette was or was not posed (fp_arm_fallback_logic.h). Present reports them.
+    thread_local fp_arm_fallback::ThreadTrace g_fpArmTrace;
+    std::atomic<uint64_t> g_fpArmOutcomes[static_cast<size_t>(fp_arm_fallback::Outcome::Count)]{};
     weapon_muzzle::Store g_halo3Muzzles;
     std::atomic<bool> g_halo3MuzzleBindingsReady{false};
     bool Halo3CaptureMuzzleOwner(int player,int slot,uint32_t& unit,uint32_t& weapon) noexcept;
@@ -3380,6 +3393,21 @@ namespace
 
             const int eye = g_stereoEye.load(std::memory_order_relaxed);
             const int captureEye = g_config.right_eye_first ? 1 : 0;
+            // A PASS OUTSIDE THE EYES while the eyes draw the HUD (a headless pass, 2026-11-09: in some frames a
+            // pass at eye -1 with a widget viewport 1760 tall beside the eyes' 2100) is not the headset's. Its
+            // crosshair went into the same capture as the eye's: one place with MCC's crosshair centred, but with
+            // it lowered, the drop is a share of each viewport's height and the capture held two crosshairs. Such
+            // a pass neither captures nor draws one while an eye pass has drawn one in the last half second.
+            static std::atomic<uint64_t> s_eyeCrosshairMs{0};
+            const uint64_t nowMs = GetTickCount64();
+            if (eye == captureEye)
+                s_eyeCrosshairMs.store(nowMs, std::memory_order_relaxed);
+            else if (eye < 0)
+            {
+                const uint64_t eyeMs = s_eyeCrosshairMs.load(std::memory_order_relaxed);
+                if (eyeMs && nowMs >= eyeMs && nowMs - eyeMs <= 500)
+                    return false;
+            }
             if (eye < 0 || eye == captureEye)
             {
                 if (!VR_ShouldCaptureAuthoredReticleThisFrame())
@@ -5297,7 +5325,10 @@ namespace
                 if (odstLevel)
                     g_reclaimerOdstHudMarkerGeneration.store(generation, std::memory_order_relaxed);
                 else if (g_reclaimerOdstHud.generation.load(std::memory_order_relaxed) != generation)
+                {
                     g_reclaimerOdstHud.record.store(0, std::memory_order_relaxed);
+                    g_reclaimerOdstHud.table.store(0, std::memory_order_relaxed);
+                }
             }
         }
         else
@@ -7727,6 +7758,9 @@ namespace
         if (slot==0 || slot==1)
         {
         g_fpInterpolationContexts[slot]={};
+        ++g_fpArmTrace.interpolations;
+        g_fpArmTrace.lastResult=result && outBones && outCount && *outBones;
+        g_fpArmTrace.lastContextBuilt=false;
         if (result && outBones && outCount && *outBones)
         {
             const int count=*outCount;
@@ -7738,6 +7772,7 @@ namespace
             if (count>0 && count<=64 && cached==count &&
                 wrist>=0 && wrist<count && cameraControl>=0 && cameraControl<count)
             {
+                g_fpArmTrace.lastContextBuilt=true;
                 auto& context=g_fpInterpolationContexts[slot];
                 context.source=*outBones;
                 context.generation=g_halo3RuntimeGeneration.load(std::memory_order_acquire);
@@ -8969,6 +9004,14 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
         if (root && source)
             reconstructed=ReconstructVisiblePaletteSource(
                 tag,context,*root,source,selectedSource);
+        if (source)
+        {
+            const uint64_t frame=VR_CurrentPreparedSerial();
+            const auto outcome=fp_arm_fallback::Classify(context.valid,reconstructed,g_fpArmTrace,source,frame);
+            g_fpArmOutcomes[static_cast<size_t>(outcome)].fetch_add(1,std::memory_order_relaxed);
+            if (context.valid) {g_fpArmTrace.lastConsumed=source;g_fpArmTrace.consumedFrame=frame;}
+            g_fpArmTrace.interpolations=0;
+        }
         FpInterpolationContext contactContext = context;
         if (reconstructed && root && selectedSource == g_fpPaletteScratch &&
             g_fpStereoSolveScope.anatomicalTracking.handAlignment)
@@ -9236,6 +9279,12 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
     // bounds (compose -> sway loop), so there is no race.
     alignas(8) volatile uintptr_t g_fpSkipBounds[4] = {0, 0, 0, 0}; // lo0,hi0,lo1,hi1
 
+    // The last tracked pose of each controller ([0] the weapon hand, [1] the other), for the frames the runtime
+    // gives none (held_controller_pose.h). Arm solves run on the game's render threads, hence the lock.
+    SRWLOCK g_heldControllerLock = SRWLOCK_INIT;
+    held_controller_pose::Hold g_heldController[2];
+    std::atomic<uint64_t> g_heldControllerSolves[2]{};
+
     bool ControllerWorldPoseEx(bool left, float basis[9], float pos[3], float& scale)
     {
         if (!g_vrAim.load() || !g_enabled.load() || !g_camValid.load() ||
@@ -9257,7 +9306,24 @@ static int LegacyAnatomicalRenderNodeCount(GameTitle title,uint16_t tag,uint32_t
                                  : VR_GetAimPose(cq, cp);
         if (oneHandOverride)
             VR_SetSupportInvocationUntrusted(false);
-        if (!poseOk) return false;
+        // No pose this frame (the runtime gave no controller input or tracking): keep the hand where it last was
+        // rather than return the arm to the game's own animation.
+        const bool leftHanded = g_config.left_handed;
+        auto& held = g_heldController[left ? 1 : 0];
+        if (poseOk)
+        {
+            AcquireSRWLockExclusive(&g_heldControllerLock);
+            held.Store(cq, cp, leftHanded);
+            ReleaseSRWLockExclusive(&g_heldControllerLock);
+        }
+        else
+        {
+            AcquireSRWLockShared(&g_heldControllerLock);
+            const bool heldOk = held.Load(cq, cp, leftHanded);
+            ReleaseSRWLockShared(&g_heldControllerLock);
+            if (!heldOk) return false;
+            g_heldControllerSolves[left ? 1 : 0].fetch_add(1, std::memory_order_relaxed);
+        }
         float hullYaw = 0.0f, hullPitch = 0.0f;
         const bool followValid =
             Halo3ReadRollStableFollow(hullYaw, hullPitch);
@@ -20250,6 +20316,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
     // Halo 3's hooks are retired when the game stops copying its camera for two seconds (a level ending, a
     // loading screen; the pause menu keeps the camera running) and installed again when the next level is live,
     // within one load of halo3.dll: a campaign session meets this at every new level.
+#include "centred_crosshair.inl"
+
     bool InstallHook(uintptr_t base, size_t size, uint32_t runtimeGeneration)
     {
         InstallSearches searches("Halo 3", g_halo3InstallSearchMemo, base, size, runtimeGeneration,
@@ -20272,6 +20340,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
 
     bool InstallHookBody(uintptr_t base, size_t size, uint32_t runtimeGeneration)
     {
+        InstallCentredCrosshair(GameTitle::Halo3, base, size, runtimeGeneration);
         if (!runtimeGeneration)
             return false;
         // A new install for the hook watch (halo3_hook_watch.inl): none of the core's hooks is in yet.
@@ -23159,6 +23228,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             LOG("ODST camera preflight: exact title mapping is no longer current");
             return OdstInstallResult::Failed;
         }
+        InstallCentredCrosshair(GameTitle::Halo3ODST, base, size, runtimeGeneration);
 
         OdstResolvedCameraRuntime resolved{};
         const OdstInstallResult preflight =
@@ -39011,6 +39081,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             return true;
         if (!base || !generation || size != kReachRetailImageSize)
             return false;
+        InstallCentredCrosshair(GameTitle::HaloReach, base, size, generation);
         if (g_reachChudParityFailedGeneration.load(
                 std::memory_order_acquire) == generation)
         {
@@ -43464,6 +43535,25 @@ static constexpr bool kOdstMappedFpEnabled = false;
     // melee lane, which otherwise publishes it.
     std::atomic<int32_t> g_halo4SightUnit{-1};
     std::atomic<uint64_t> g_halo4SightUnitAtMs{0};
+    // Whether g_halo4SightUnit still names our unit at `now`: stamped within 250 ms, or through a zoom of the game's
+    // that began while it was. The game stops drawing the first-person body once its zoom is in (no body records
+    // while zoomed), and the stamp going stale there dropped the trace, the drive and the fire eye mid-zoom: the aim
+    // stepped off the traced point about a quarter second after the zoom settled. Each reader still proves the unit
+    // on foot.
+    bool Halo4SightUnitFresh(uint64_t now)
+    {
+        const uint64_t at = g_halo4SightUnitAtMs.load(std::memory_order_acquire);
+        if (!at || now < at)
+            return false;
+        if (now - at <= 250)
+            return true;
+        int level = -1;
+        if (!GameZoomed(GameTitle::Halo4, level))
+            return false;
+        const uint64_t since = g_gameZoomSinceMs.load(std::memory_order_relaxed);
+        // Fresh when the zoom began, or stamped since (the body is still drawn while the zoom comes in).
+        return since && at + 250 >= since;
+    }
     // Flat parity's fire eye, Halo 4 (halo4_fire_eye.inl, every build): the proof's per-tick sample at rest.
     void Halo4NoteFireEyeTick(uint32_t unit, bool onFoot);
 #if HALOMCCVR_DEV_DIAGNOSTICS
@@ -51387,6 +51477,7 @@ static constexpr bool kOdstMappedFpEnabled = false;
             return false;
         if (!Halo4Adapter_RuntimeHooksPermitted())
             return false;
+        InstallCentredCrosshair(GameTitle::Halo4, base, size, generation);
         // C-H4-2's verdict for THIS module instance is the entry condition.
         if (!Halo4ColdObservation_Passed(generation))
             return false;
@@ -53001,6 +53092,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
                         }
                         activeLevelRunning = Halo2ColdObservation_Poll(
                             gateBase, gateSize, gateGeneration);
+                        if (activeLevelRunning)
+                            InstallCentredCrosshair(GameTitle::Halo2, gateBase, gateSize, gateGeneration);
                         halo2GateBase = gateBase;
                         halo2GateSize = gateSize;
                         halo2GateSampled = true;
@@ -53051,6 +53144,8 @@ static constexpr bool kOdstMappedFpEnabled = false;
                 // Feature transactions retire independently. A missing hand
                 // graph or HUD target must never disarm CE's camera core.
                 const auto ceGeneration=TitleAdapter_GetGeneration(GameTitle::HaloCE);
+                if (ceActive&&ceBase&&HaloCE_Armed())
+                    InstallCentredCrosshair(GameTitle::HaloCE,ceBase,ceSize,ceGeneration);
                 (void)HaloCEControls_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCEFirstPerson_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
                 (void)HaloCEContact_Poll(ceBase,ceSize,ceGeneration,ceActive&&HaloCE_Armed());
@@ -56358,6 +56453,55 @@ void Game_AutoVrTick()
             else if (side==2)
                 LOG("M3 VRIK SAFE-DIAG: left arm not applied (%s)",
                     why?why:"pre-solve");
+        }
+    }
+    {
+        // First-person palettes drawn with the game's own arms, by cause, every 5 s while any appear.
+        constexpr size_t kOutcomes=static_cast<size_t>(fp_arm_fallback::Outcome::Count);
+        static uint64_t reported[kOutcomes]{};
+        static uint64_t windowStartMs=0;
+        static uint32_t presents=0;
+        ++presents;
+        const uint64_t reportNow=GetTickCount64();
+        if (!windowStartMs) windowStartMs=reportNow;
+        if (reportNow-windowStartMs>=5000)
+        {
+            uint64_t delta[kOutcomes]{};
+            uint64_t unposed=0;
+            for (size_t i=0;i<kOutcomes;++i)
+            {
+                const uint64_t total=g_fpArmOutcomes[i].load(std::memory_order_relaxed);
+                delta[i]=total-reported[i];reported[i]=total;
+                if (i!=static_cast<size_t>(fp_arm_fallback::Outcome::Posed) &&
+                    i!=static_cast<size_t>(fp_arm_fallback::Outcome::RepeatSubmission)) unposed+=delta[i];
+            }
+            if (unposed)
+            {
+                using fp_arm_fallback::Outcome;
+                auto at=[&](Outcome o){return static_cast<unsigned long long>(delta[static_cast<size_t>(o)]);};
+                LOG("Halo 3 arms: %llu of %llu first-person palettes used the game's own arms in %.1f s "
+                    "(%.1f game frames/s): %s %llu, %s %llu, %s %llu, %s %llu, %s %llu; %s %llu, %s %llu",
+                    static_cast<unsigned long long>(unposed),
+                    static_cast<unsigned long long>(unposed+at(Outcome::Posed)),
+                    (reportNow-windowStartMs)/1000.0,presents*1000.0/(reportNow-windowStartMs),
+                    Name(Outcome::NoInterpolation),at(Outcome::NoInterpolation),
+                    Name(Outcome::InterpolationFailed),at(Outcome::InterpolationFailed),
+                    Name(Outcome::ContextRejected),at(Outcome::ContextRejected),
+                    Name(Outcome::SourceMismatch),at(Outcome::SourceMismatch),
+                    Name(Outcome::SolveFailed),at(Outcome::SolveFailed),
+                    Name(Outcome::Posed),at(Outcome::Posed),
+                    Name(Outcome::RepeatSubmission),at(Outcome::RepeatSubmission));
+            }
+            static uint64_t heldReported[2]{};
+            const uint64_t heldRight=g_heldControllerSolves[0].load(std::memory_order_relaxed)-heldReported[0];
+            const uint64_t heldLeft=g_heldControllerSolves[1].load(std::memory_order_relaxed)-heldReported[1];
+            heldReported[0]+=heldRight;heldReported[1]+=heldLeft;
+            if (heldRight||heldLeft)
+                LOG("Halo 3 arms: the controller gave no pose, so %llu weapon-hand and %llu other-hand arm solves "
+                    "in %.1f s kept the hand where it was last tracked",
+                    static_cast<unsigned long long>(heldRight),static_cast<unsigned long long>(heldLeft),
+                    (reportNow-windowStartMs)/1000.0);
+            windowStartMs=reportNow;presents=0;
         }
     }
     {
@@ -60407,6 +60551,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     bool gunOffsetOn = false;
     float gunOffsetYaw = 0.0f, gunOffsetPitch = 0.0f;
     float driveAimYaw = aimYaw, driveAimPitch = aimPitch;
+    // On foot, the record's steady pitch minus the camera's (LegacyDriveFootPitchOffset); the servo's feedback below.
+    float footRecordPitchOffset = 0.0f;
     // A HALO 3 LOOK-STEERED LAND DRIVER's gun band (halo3_vehicle_gun_band.inl): the hull frame, the band and the
     // guns' world origin, when the band is current for the seat's own vehicle.
     bool bandValid = false;
@@ -60607,6 +60753,8 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
             }
             LegacyDrivePublish(driveTitle, desiredYaw, desiredPitch, driveAimYaw, driveAimPitch, true, driveSeated,
                                seatAxes, seat_drive::PitchLatches(seatFacts), seatKey, gunSlavedSeat, gunCameraSeat);
+            if (!driveSeated)
+                footRecordPitchOffset = LegacyDriveFootPitchOffset(driveTitle);
             if (!driveSeated && LegacyDriveLive(driveTitle))
             {
                 // The game's aim IS the written target now. A converged target is then the game's aim itself,
@@ -60824,7 +60972,10 @@ bool Game_ComputeAimStick(float& outRx, float& outRy)
     // hook) once it has agreed with the record for gun_slaved::kServoTrustSamples samples this stint; until then, or
     // with no fresh read, on the gun as before. Either way the gun-slaved servo is paced (gun_slaved::ServoPacer).
     // (A Halo 3 gun-slaved seat with its camera's offset fed forward reads the gun minus it: driveAim*.)
-    float servoAimYaw = driveAimYaw, servoAimPitch = driveAimPitch;
+    // ON FOOT the pitch is the record's, the camera's plus the steady offset the hook reads between them
+    // (seat_drive::SteadyPitchOffset): with MCC's crosshair location not centred the camera sits above the record the
+    // shots follow, and closing the camera on the hand put them that far below the reticle. Centred, it is 0.
+    float servoAimYaw = driveAimYaw, servoAimPitch = driveAimPitch + footRecordPitchOffset;
     const bool gunSlavedServo = gunCameraSeat && !halo4Aim && !freeCamera;
 #if HALOMCCVR_DEV_DIAGNOSTICS
     int servoFeedback[2]{-1, -1};   // per axis: 1 the occupant, 0 the gun, -1 not steered (dev witness)
@@ -63968,4 +64119,9 @@ bool Game_Halo2VehicleCameraChase(const NativeVehicleCameraOwner& owner) noexcep
     return VehicleCameraRead(camera, chosenFor) && chosenFor.generation == owner.generation &&
            chosenFor.vehicle == static_cast<int32_t>(owner.parent) && chosenFor.seatIndex == owner.seat &&
            chosenFor.mounted == (owner.root != UINT32_MAX && owner.root != owner.parent);
+}
+
+bool Game_ReclaimerOdstLevel() noexcept
+{
+    return g_hostIsProjectReclaimer && g_reclaimerOdstLevel.load(std::memory_order_relaxed);
 }

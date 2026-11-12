@@ -134,6 +134,9 @@ inline constexpr const char* ActionName(GameTitle title,Action action) noexcept
 {
     if(action>=Count) return "";
     if(title==GameTitle::Halo2&&action==Interact) return "Use device / context action";
+    // The left gun fires on this button while dual wielding (RetiredExtra), so it has no row of its own.
+    if((title==GameTitle::Halo2||title==GameTitle::Halo3)&&action==Grenade)
+        return "Grenade / left gun (dual wielding)";
     return kNames[action];
 }
 }

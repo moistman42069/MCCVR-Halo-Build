@@ -38,6 +38,14 @@ struct Halo2VehicleViewState
     {
         if(resumeValid&&std::isfinite(headTurn)) resumeYaw=std::remainder(resumeYaw+headTurn,6.28318530718f);
     }
+    // The player's own turn (VR turning on the right stick, Halo2SeatTurnState): the seat's heading turns by `delta`
+    // radians, left positive, while an occupation is live. Called before Build, which keeps the heading for the same
+    // occupation; a new occupation seeds its own.
+    void Turn(float delta) noexcept
+    {
+        if(active&&std::isfinite(delta)&&delta!=0.0f) referenceYaw=std::remainder(referenceYaw+delta,6.28318530718f);
+    }
+
     // The player's own recenter: the seat resumes looking along `yaw` (the vehicle's nose), with the hull's
     // yaw now as the follow reference.
     void ReseedResume(float yaw,float hullYawNow) noexcept
@@ -78,5 +86,34 @@ struct Halo2VehicleViewState
         output.up[0]=output.up[1]=0;output.up[2]=1;
         key=next;active=true;follow=followHull;timeMs=now;lastHullYaw=hullYaw;
         return true;
+    }
+};
+
+// VR TURNING IN A SEAT, as Halo 3 has it (shared_vr_turn.inl): Halo 2's seats are steered by the hand, so the right
+// stick is free and turns the seat's heading (Halo2VehicleViewState::Turn); the hands are built on that heading, so a
+// look-steered vehicle turns with the view. Right turns right, so the left-positive heading decreases. Smooth: past
+// 0.15, at `smoothDegPerSec` for `dt` seconds (capped at 0.1 s). Snap: one `snapDeg` step (5-90 deg) per push past 0.6,
+// re-armed once the stick is back under 0.3 -- Halo2FootView::Turn's thresholds. A push held across a switch to snap,
+// or into the seat, does not snap.
+struct Halo2SeatTurnState
+{
+    bool snapLatched=true;
+
+    // The heading's change this frame, in radians; `snapped` says a snap step was taken.
+    float Step(bool padValid,float x,bool snapMode,float snapDeg,float smoothDegPerSec,float dt,bool& snapped) noexcept
+    {
+        snapped=false;
+        if(!padValid || !std::isfinite(x)) { snapLatched=true; return 0.0f; }
+        if(std::fabs(x)<0.3f) snapLatched=false;
+        if(!snapMode) {
+            if(std::fabs(x)>0.6f) snapLatched=true;
+            if(std::fabs(x)>0.15f && std::isfinite(dt) && dt>0.0f && std::isfinite(smoothDegPerSec))
+                return -x*smoothDegPerSec*0.0174532925199f*std::min(dt,0.1f);
+            return 0.0f;
+        }
+        if(snapLatched || std::fabs(x)<=0.6f || !std::isfinite(snapDeg)) return 0.0f;
+        snapLatched=true;
+        snapped=true;
+        return -std::copysign(std::clamp(snapDeg,5.0f,90.0f)*0.0174532925199f,x);
     }
 };

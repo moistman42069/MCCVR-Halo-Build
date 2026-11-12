@@ -7,8 +7,18 @@
 // converted copy moved nothing; writing it to the 1280x720 buffer the list names shrank the HUD at once, and putting
 // the title's value back there brought the full-size HUD back (FA, 2026-11-07). The heap also holds hundreds of freed
 // buffers with the same bytes and two dozen lone entries naming them, and writing such copies closed the game, so only
-// the 1280x720 buffer of the one list that names ODST's whole block is written, and the list is read again before
-// every write.
+// the buffers of the one list that names ODST's whole block are written, and the list is read again before every write.
+//
+// ALL FIVE OF THEM. Through 0.10.1 the client drew one player's HUD from the block's first record (1280x720). 0.10.2
+// reworked ODST's split-screen HUD (each of up to four players gets the whole HUD), and on its first run the HUD was
+// the game's size again with the list found and the 1280x720 buffer holding the written layout (2026-11-11): the
+// client now draws from another of the block's records, plausibly the one nearest its screen's shape (the mod's
+// 2912x2100 is nearer 920x690's than 1280x720's). Every record of that one list gets the layout, as Halo 3's records
+// do, each keeping its own depth.
+//
+// AND 0.10.2'S OWN TABLE. That alone left the HUD wide: 0.10.2 keeps a table of the five records' leading fields of its
+// own (reclaimer_odst_hud::TableAt), with the game's safe frames, two of them zero. The one such table is found in the
+// same pass and its five pairs get the layout too, the table read whole and checked before every write.
 //
 // ON ITS OWN, FROM THE LEVEL'S START. The first build searched only after Halo 3's layout scan (6 s) and read all of
 // memory twice (13 s): ODST's HUD kept the game's size for about 20 s of every level (2026-11-07 16:55). The search now
@@ -25,13 +35,14 @@ struct ReclaimerOdstHudRecord
     std::atomic<uintptr_t> listEntry{0};
     std::atomic<uintptr_t> record{0};
     std::atomic<uint32_t> generation{0};
-    std::atomic<uint32_t> baseDepthBits{0};
+    std::atomic<uint32_t> baseDepthBits[reclaimer_odst_hud::kBlockRecords]{};
+    std::atomic<uintptr_t> table{0};   // 0.10.2's table (0: none found)
 };
 ReclaimerOdstHudRecord g_reclaimerOdstHud{};
 // The depth field the last record found held when first found: the same buffer found again keeps it, so the curvature
 // setting never compounds.
 std::atomic<uintptr_t> g_reclaimerOdstHudRememberedRecord{0};
-std::atomic<uint32_t> g_reclaimerOdstHudRememberedDepthBits{0};
+std::atomic<uint32_t> g_reclaimerOdstHudRememberedDepthBits[reclaimer_odst_hud::kBlockRecords]{};
 // The search: one at a time, a few tries a level (the client's parse may not be listed yet at the very start).
 std::atomic<bool> g_reclaimerOdstHudSearchInFlight{false};
 std::atomic<uint32_t> g_reclaimerOdstHudSearchGeneration{0};
@@ -77,6 +88,23 @@ static bool ReclaimerOdstHudRecordHolds(uintptr_t listEntry, uintptr_t record)
         memcmp(anchor, view.anchor, 8) == 0 && SafeFrameAnchorEquals(anchor, view);
 }
 
+// The five records the list at `listEntry` names, in the block's order.
+static bool ReclaimerOdstHudBlockRecords(uintptr_t listEntry, uintptr_t (&records)[reclaimer_odst_hud::kBlockRecords])
+{
+    uint64_t words[3 * reclaimer_odst_hud::kBlockRecords]{};
+    if (!listEntry || !ReadOwnMemory(listEntry, words, sizeof(words)))
+        return false;
+    for (int i = 0; i < reclaimer_odst_hud::kBlockRecords; ++i)
+        records[i] = static_cast<uintptr_t>(words[3 * i + 1]);
+    return true;
+}
+
+// Where a record's safe-frame pair sits.
+static uintptr_t ReclaimerOdstHudSlot(uintptr_t record)
+{
+    return record + reclaimer_odst_hud::kWidthOffset + static_cast<uintptr_t>(kOdstHudLayoutAdapter.safeFrameOffset);
+}
+
 // Calls `visit(base, size)` for each committed private read-write region outside this module. False: the level
 // changed on the way.
 template <class Visit>
@@ -114,9 +142,12 @@ static void FindReclaimerOdstHudRecord(uint32_t generation, int attempt)
     constexpr size_t kEntryWords = 3 * reclaimer_odst_hud::kBlockRecords;
     constexpr size_t kWindowWords = (size_t{1} << 17) + kEntryWords;
     static uint64_t s_window[kWindowWords];
-    uintptr_t listEntry = 0, record = 0;
-    int listed = 0;
+    uintptr_t listEntry = 0, record = 0, table = 0;
+    int listed = 0, tabled = 0;
     uint64_t scanned = 0;
+    // Windows overlap by a whole table, so one across a window's end is seen in the next; anything seen twice there is
+    // counted once (addresses only rise).
+    constexpr size_t kOverlap = (std::max)((kEntryWords - 1) * 8, (reclaimer_odst_hud::kTableBytes + 7) / 8 * 8);
     if (!ForEachPrivateReadWriteRegion(generation, [&](uintptr_t base, size_t size) {
             if (tagBase && base >= tagBase && base - tagBase < kTagDataSpan)
                 return;
@@ -144,19 +175,41 @@ static void FindReclaimerOdstHudRecord(uint32_t generation, int attempt)
                         s_window[w + 14] != reclaimer_odst_hud::kRecordLength)
                         continue;
                     const uintptr_t entry = base + pos + w * 8;
-                    if (!ReclaimerOdstHudRecordHolds(entry, static_cast<uintptr_t>(s_window[w + 1])))
+                    if (entry <= listEntry ||
+                        !ReclaimerOdstHudRecordHolds(entry, static_cast<uintptr_t>(s_window[w + 1])))
                         continue;
                     ++listed;
                     listEntry = entry;
                     record = static_cast<uintptr_t>(s_window[w + 1]);
                 }
-                // The next window starts where an entry not yet seen whole could begin.
-                pos += got == want && pos + got < size ? got - (kEntryWords - 1) * 8
-                                                       : (((pos + got) >> 12) + 1) << 12;
+                const auto* bytes = reinterpret_cast<const uint8_t*>(s_window);
+                for (size_t b = 0; b + reclaimer_odst_hud::kTableBytes <= got; b += 4)
+                {
+                    uint32_t first[2]{};
+                    memcpy(first, bytes + b, sizeof(first));
+                    if (first[0] != reclaimer_odst_hud::kBlockShapes[0].width ||
+                        first[1] != reclaimer_odst_hud::kBlockShapes[0].height || base + pos + b <= table ||
+                        !reclaimer_odst_hud::TableAt(bytes + b))
+                        continue;
+                    ++tabled;
+                    table = base + pos + b;
+                }
+                // The next window starts where an entry or a table not yet seen whole could begin.
+                pos += got == want && pos + got < size ? got - kOverlap : (((pos + got) >> 12) + 1) << 12;
             }
         }))
         return;
 
+    // Only what this search found: a table from an earlier level may be freed memory now.
+    g_reclaimerOdstHud.table.store(tabled == 1 ? table : 0, std::memory_order_relaxed);
+    if (tabled == 1)
+    {
+        LOG("SAFEFRAME [Halo 3]: ODST's level on Project Reclaimer: the client's own table of ODST's five layouts at %p "
+            "gets the layout too (Project Reclaimer 0.10.2 and later)", reinterpret_cast<void*>(table));
+    }
+    else if (tabled)
+        LOG("SAFEFRAME [Halo 3]: ODST's level on Project Reclaimer, try %d: %d tables of ODST's five layouts, not told "
+            "apart; nothing written to them", attempt, tabled);
     if (listed != 1)
     {
         LOG("SAFEFRAME [Halo 3]: ODST's level on Project Reclaimer, try %d: %d list(s) name ODST's whole layout block "
@@ -164,25 +217,35 @@ static void FindReclaimerOdstHudRecord(uint32_t generation, int attempt)
             static_cast<unsigned long long>(scanned >> 20),
             listed ? "not told apart, nothing written there" : "ODST's HUD keeps the game's size for now",
             static_cast<unsigned long long>(GetTickCount64() - t0));
+        if (tabled == 1 && HudLayoutContextMatches(HudLayoutProfile::Halo3, generation))
+            g_reclaimerOdstHud.generation.store(generation, std::memory_order_release);
         return;
     }
-    const uintptr_t slot = record + reclaimer_odst_hud::kWidthOffset +
-        static_cast<uintptr_t>(kOdstHudLayoutAdapter.safeFrameOffset);
-    uint32_t depth = 0;
-    if (!ReadOwnMemory(slot + kOdstHudLayoutAdapter.depthFromSlot, &depth, sizeof(depth)) ||
-        !HudDestinationPlausible(depth) || !HudLayoutContextMatches(HudLayoutProfile::Halo3, generation))
+    uintptr_t records[reclaimer_odst_hud::kBlockRecords]{};
+    uint32_t depths[reclaimer_odst_hud::kBlockRecords]{};
+    if (!ReclaimerOdstHudBlockRecords(listEntry, records))
         return;
-    if (g_reclaimerOdstHudRememberedRecord.exchange(record, std::memory_order_relaxed) == record)
-        depth = g_reclaimerOdstHudRememberedDepthBits.load(std::memory_order_relaxed);
-    else
-        g_reclaimerOdstHudRememberedDepthBits.store(depth, std::memory_order_relaxed);
+    for (int i = 0; i < reclaimer_odst_hud::kBlockRecords; ++i)
+        if (!ReadOwnMemory(ReclaimerOdstHudSlot(records[i]) + kOdstHudLayoutAdapter.depthFromSlot, &depths[i],
+                           sizeof(depths[i])) || !HudDestinationPlausible(depths[i]))
+            return;
+    if (!HudLayoutContextMatches(HudLayoutProfile::Halo3, generation))
+        return;
+    const bool remembered = g_reclaimerOdstHudRememberedRecord.exchange(record, std::memory_order_relaxed) == record;
+    for (int i = 0; i < reclaimer_odst_hud::kBlockRecords; ++i)
+    {
+        if (remembered)
+            depths[i] = g_reclaimerOdstHudRememberedDepthBits[i].load(std::memory_order_relaxed);
+        else
+            g_reclaimerOdstHudRememberedDepthBits[i].store(depths[i], std::memory_order_relaxed);
+        g_reclaimerOdstHud.baseDepthBits[i].store(depths[i], std::memory_order_relaxed);
+    }
     g_reclaimerOdstHud.listEntry.store(listEntry, std::memory_order_relaxed);
     g_reclaimerOdstHud.record.store(record, std::memory_order_relaxed);
-    g_reclaimerOdstHud.baseDepthBits.store(depth, std::memory_order_relaxed);
     g_reclaimerOdstHud.generation.store(generation, std::memory_order_release);
     LOG("SAFEFRAME [Halo 3]: ODST's level on Project Reclaimer: the client draws its HUD from its own copy of ODST's "
-        "layout record at %p (first of ODST's block listed at %p; try %d, %llu MB of the client's memory read); the "
-        "layout is written there (%llu ms)", reinterpret_cast<void*>(record), reinterpret_cast<void*>(listEntry),
+        "layout records, the first at %p (ODST's block listed at %p; try %d, %llu MB of the client's memory read); the "
+        "layout is written to all five (%llu ms)", reinterpret_cast<void*>(record), reinterpret_cast<void*>(listEntry),
         attempt, static_cast<unsigned long long>(scanned >> 20),
         static_cast<unsigned long long>(GetTickCount64() - t0));
 }
@@ -195,54 +258,116 @@ static DWORD WINAPI ReclaimerOdstHudSearchThread(LPVOID parameter)
     return 0;
 }
 
+// 0.10.2's table: its five safe-frame pairs get the layout when they differ, the table read whole and checked first.
+// False: there is none, or it is no longer the client's.
+static bool ApplyReclaimerOdstHudTable(uint32_t generation, float horizontal, float vertical, bool reportReadback)
+{
+    const uintptr_t table = g_reclaimerOdstHud.table.load(std::memory_order_relaxed);
+    if (!table)
+        return false;
+    uint8_t bytes[reclaimer_odst_hud::kTableBytes]{};
+    if (!ReadOwnMemory(table, bytes, sizeof(bytes)) || !reclaimer_odst_hud::TableAt(bytes))
+    {
+        g_reclaimerOdstHud.table.store(0, std::memory_order_relaxed);
+        LOG("SAFEFRAME [Halo 3]: Project Reclaimer's table of ODST's layouts at %p is gone; not written again",
+            reinterpret_cast<void*>(table));
+        return false;
+    }
+    const float pair[2]{horizontal, vertical};
+    int holding = 0;
+    for (int i = 0; i < reclaimer_odst_hud::kBlockRecords; ++i)
+    {
+        const size_t at = static_cast<size_t>(i) * reclaimer_odst_hud::kTableStride + reclaimer_odst_hud::kTablePairOffset;
+        if (memcmp(bytes + at, pair, sizeof(pair)) == 0)
+        {
+            ++holding;
+            continue;
+        }
+        SIZE_T wrote = 0;
+        AcquireSRWLockShared(&g_hudLayoutWriteLock);
+        if (HudLayoutContextMatches(HudLayoutProfile::Halo3, generation))
+            WriteProcessMemory(GetCurrentProcess(), reinterpret_cast<void*>(table + at), pair, sizeof(pair), &wrote);
+        ReleaseSRWLockShared(&g_hudLayoutWriteLock);
+    }
+    if (reportReadback)
+        LOG("SAFEFRAME [Halo 3]: Project Reclaimer's table of ODST's layouts: %d of %d already held %.4f/%.4f",
+            holding, reclaimer_odst_hud::kBlockRecords, horizontal, vertical);
+    return true;
+}
+
 // Writes the layout to the record when it differs. False: the record is no longer the client's.
 static bool ApplyReclaimerOdstHudRecord(uint32_t generation, float horizontal, float vertical, float curvature,
                                         bool reportReadback)
 {
+    const bool tabled = ApplyReclaimerOdstHudTable(generation, horizontal, vertical, reportReadback);
     const uintptr_t record = g_reclaimerOdstHud.record.load(std::memory_order_relaxed);
+    if (!record)
+        return tabled;
     const uintptr_t listEntry = g_reclaimerOdstHud.listEntry.load(std::memory_order_relaxed);
     if (!ReclaimerOdstHudRecordHolds(listEntry, record))
     {
         g_reclaimerOdstHud.record.store(0, std::memory_order_relaxed);
         LOG("SAFEFRAME [Halo 3]: Project Reclaimer no longer lists ODST's layout record at %p; not written again",
             reinterpret_cast<void*>(record));
-        return false;
+        return tabled;
     }
-    const uintptr_t slot = record + reclaimer_odst_hud::kWidthOffset +
-        static_cast<uintptr_t>(kOdstHudLayoutAdapter.safeFrameOffset);
-    float pair[2]{};
-    uint32_t depthBits = 0;
-    if (!ReadOwnMemory(slot, pair, sizeof(pair)) ||
-        !ReadOwnMemory(slot + kOdstHudLayoutAdapter.depthFromSlot, &depthBits, sizeof(depthBits)))
+    uintptr_t records[reclaimer_odst_hud::kBlockRecords]{};
+    if (!ReclaimerOdstHudBlockRecords(listEntry, records))
         return true;
-    float baseDepth = 0.0f;
-    const uint32_t baseBits = g_reclaimerOdstHud.baseDepthBits.load(std::memory_order_relaxed);
-    memcpy(&baseDepth, &baseBits, sizeof(baseDepth));
-    // As the records ApplyHudLayoutOnce writes: 0 flat, 1 fully curved, 0.5 the authored value.
-    const float depth = baseDepth + (0.30f - 0.60f * curvature);
-    uint32_t targetBits = 0;
-    memcpy(&targetBits, &depth, sizeof(targetBits));
-    if (!HudDestinationPlausible(targetBits))
-        return true;
+    int holding = 0;
+    for (int i = 0; i < reclaimer_odst_hud::kBlockRecords; ++i)
+    {
+        const uintptr_t slot = ReclaimerOdstHudSlot(records[i]);
+        float pair[2]{};
+        uint32_t depthBits = 0;
+        if (!ReadOwnMemory(slot, pair, sizeof(pair)) ||
+            !ReadOwnMemory(slot + kOdstHudLayoutAdapter.depthFromSlot, &depthBits, sizeof(depthBits)))
+            continue;
+        float baseDepth = 0.0f;
+        const uint32_t baseBits = g_reclaimerOdstHud.baseDepthBits[i].load(std::memory_order_relaxed);
+        memcpy(&baseDepth, &baseBits, sizeof(baseDepth));
+        // As the records ApplyHudLayoutOnce writes: 0 flat, 1 fully curved, 0.5 the authored value.
+        const float depth = baseDepth + (0.30f - 0.60f * curvature);
+        uint32_t targetBits = 0;
+        memcpy(&targetBits, &depth, sizeof(targetBits));
+        if (!HudDestinationPlausible(targetBits))
+            continue;
+        if (reportReadback && i == 0)
+            LOG("SAFEFRAME [Halo 3]: Project Reclaimer's ODST record at %p reads %.4f/%.4f, writing %.4f/%.4f to "
+                "all five", reinterpret_cast<void*>(records[i]), pair[0], pair[1], horizontal, vertical);
+        if (pair[0] == horizontal && pair[1] == vertical && depthBits == targetBits)
+        {
+            ++holding;
+            continue;
+        }
+        AcquireSRWLockShared(&g_hudLayoutWriteLock);
+        if (HudLayoutContextMatches(HudLayoutProfile::Halo3, generation))
+            SafeFrameStoreLayout(slot, kOdstHudLayoutAdapter, depth, horizontal, vertical);
+        ReleaseSRWLockShared(&g_hudLayoutWriteLock);
+    }
     if (reportReadback)
-        LOG("SAFEFRAME [Halo 3]: Project Reclaimer's ODST record at %p reads %.4f/%.4f, writing %.4f/%.4f",
-            reinterpret_cast<void*>(record), pair[0], pair[1], horizontal, vertical);
-    if (pair[0] == horizontal && pair[1] == vertical && depthBits == targetBits)
-        return true;
-    AcquireSRWLockShared(&g_hudLayoutWriteLock);
-    if (HudLayoutContextMatches(HudLayoutProfile::Halo3, generation))
-        SafeFrameStoreLayout(slot, kOdstHudLayoutAdapter, depth, horizontal, vertical);
-    ReleaseSRWLockShared(&g_hudLayoutWriteLock);
+        LOG("SAFEFRAME [Halo 3]: Project Reclaimer's ODST records: %d of %d already held the layout", holding,
+            reclaimer_odst_hud::kBlockRecords);
     return true;
 }
+
+// Whether the running level is ODST's (Game_ReclaimerOdstLevel, end of game.cpp), as the HUD tick below last judged it.
+std::atomic<bool> g_reclaimerOdstLevel{false};
 
 // Present thread, from HudLayoutAutoTick while a Halo 3 level runs on Project Reclaimer: starts the search on an ODST
 // level, then keeps the record holding the layout the player's settings and the Aim Frame want.
 static void ReclaimerOdstHudTick(uint32_t generation, uint64_t now, float horizontal, float vertical,
                                  float curvature)
 {
-    if (g_reclaimerOdstHud.record.load(std::memory_order_relaxed) &&
-        g_reclaimerOdstHud.generation.load(std::memory_order_acquire) == generation)
+    const bool found = (g_reclaimerOdstHud.record.load(std::memory_order_relaxed) ||
+                        g_reclaimerOdstHud.table.load(std::memory_order_relaxed)) &&
+        g_reclaimerOdstHud.generation.load(std::memory_order_acquire) == generation;
+    g_reclaimerOdstLevel.store(
+        found ||
+            g_reclaimerOdstHudMarkerGeneration.load(std::memory_order_relaxed) == generation ||
+            Halo3LoadedScenarioIsOdst(),
+        std::memory_order_relaxed);
+    if (found)
     {
         static uint64_t s_lastApplyMs = 0, s_lastReadbackMs = 0;
         static float s_lastH = 0.0f, s_lastV = 0.0f, s_lastCurvature = -1.0f;

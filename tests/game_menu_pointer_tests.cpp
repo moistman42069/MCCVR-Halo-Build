@@ -170,7 +170,8 @@ int main()
     Check(mouseDown&&NativeMenuPointer_ConsumesTrigger(),"reported six-module shell now delivers trigger click");
     Frame(true);
     physicalDown=true; Frame(true,true); Check(!mouseDown,"physical drag remains native"); physicalDown=false;
-    covered=true; Frame(true); Check(!mouseDown,"covered window cannot click"); covered=false;
+    covered=true; Frame(true); Check(!mouseDown,"covered window cannot click");
+    Check(NativeMenuPointer_ConsumesTrigger(),"a covered point keeps the trigger and stick from the game"); covered=false;
     Frame(true); sendOk=false; Frame(true,true); Check(!mouseDown&&logs>0,"send failure stays optional and logs"); sendOk=true;
     Frame(true); Frame(true,true); sendOk=false; Frame(false);
     Check(mouseDown&&timer,"failed release retains retry ownership"); sendOk=true;

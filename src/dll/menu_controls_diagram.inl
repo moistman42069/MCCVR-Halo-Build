@@ -129,7 +129,7 @@ void DrawControlsDiagram()
     // What it shows: the game chosen under VR Mappings, as its rows stand, and its layout while it is running.
     const int title = MappingTitle();
     const auto game = static_cast<GameTitle>(title + 1);
-    const bool running = weapon_interaction::TitleIndex(TitleAdapter_GetActiveTitle()) == title;
+    const bool running = weapon_interaction::TitleIndex(Game_ControlsTitle(TitleAdapter_GetActiveTitle())) == title;
     vr_mapping::Transports layout{};
     vr_mapping::ExtraTransports extraLayout{};
     const bool layoutKnown = running && Game_ReadVrActionBindings(layout, GetTickCount64());

@@ -1149,7 +1149,17 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key,"two_hand_zone_right_m")) loadedTwoHandZoneRight=true;
         if (ParseWeaponAlignmentKey(key,val)||ParseTitleProfileKey(key, val))
             continue;
-        if(!strcmp(key,"vr_inputs_version")) {inputsVersion=atoi(val);continue;}
+        if(!strcmp(key,"vr_inputs_version"))
+        {
+            inputsVersion=atoi(val);
+            // From version 3 a file names only the rows a player changed: the rest are the default controls' rows
+            // (default_controls::Rows), so a later change to those reaches them. The version comes before the rows.
+            if(inputsVersion>=3)
+                for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+                    default_controls::Rows(static_cast<GameTitle>(title+1),g_config.vr_bindings[title],
+                        g_config.vr_inputs[title],g_config.vr_extra_bindings[title]);
+            continue;
+        }
         // A row's inputs (vr_mapping::ParseInput): its own (the key alone, which may be Automatic) and further ones (_2
         // on), and the extra rows' (their own may be Automatic too).
         bool vrBindingKey=false;
@@ -1595,6 +1605,7 @@ void ConfigLoad(const wchar_t* path)
         if (!strcmp(key, "mono_rendering")) { g_config.mono_rendering = atoi(val) != 0; continue; }
         if (!strcmp(key, "aim_frame_zoom")) { g_config.aim_frame_zoom = atoi(val) != 0; continue; }
         if (!strcmp(key, "aim_frame_stereo")) { g_config.aim_frame_stereo = atoi(val) != 0; continue; }
+        if (!strcmp(key, "halo2_camera_shake")) { g_config.halo2_camera_shake = atoi(val) != 0; continue; }
         if (!strcmp(key, "aim_frame_3d_strength")) { g_config.aim_frame_3d_strength = (float)atof(val); continue; }
         if (!strcmp(key, "aim_frame_size_deg_1")) { g_config.aim_frame_size_deg[0] = (float)atof(val); continue; }
         if (!strcmp(key, "aim_frame_size_deg_2")) { g_config.aim_frame_size_deg[1] = (float)atof(val); continue; }
@@ -2426,6 +2437,12 @@ void ConfigLoad(const wchar_t* path)
         g_config.vr_mod_bindings[vr_mapping::Pause]={};
         LOG("config: Y + B sending Start was off, so the Pause row has no inputs");
     }
+    // A file from when the default controls left rows on Automatic: those rows take the default's own control, so the
+    // VR controls no longer follow the player's flat MCC layout. VR Mappings off keeps its rows: the plain route reads
+    // none of them.
+    if(inputsVersion<3&&g_config.vr_action_mapping)
+        if(const unsigned moved=default_controls::FillAutomatic(g_config))
+            LOG("config: %u VR Mappings rows left on Automatic took the default controls' own",moved);
     if (!halo4HudHeightV2) {
         // Halo 4's HUD height ran the other way until it was corrected (a positive value lowered the HUD), so a
         // saved Halo 4 height is turned over once: the HUD stays exactly where the player put it. In memory only:
@@ -2785,6 +2802,9 @@ void ConfigSave()
     fprintf(f, "# (default %d)\n", d.halo2_gamepad_graphics_switch ? 1 : 0);
     fprintf(f, "halo2_gamepad_graphics_switch = %d\n\n",
             g_config.halo2_gamepad_graphics_switch ? 1 : 0);
+    fprintf(f, "# Halo 2: the game's camera shake from firing, damage and explosions in the headset view.\n");
+    fprintf(f, "# (default %d)\n", d.halo2_camera_shake ? 1 : 0);
+    fprintf(f, "halo2_camera_shake = %d\n\n", g_config.halo2_camera_shake ? 1 : 0);
     fprintf(f, "# Hold this controller next to your head to use the left stick as D-pad:\n");
     fprintf(f, "# 0 = left controller, 1 = right controller.\n");
     fprintf(f, "# While held, clicking the left stick presses the controller's\n");
@@ -3801,17 +3821,24 @@ void ConfigSave()
         d.input_preset,g_config.input_preset);
     fprintf(f,"# VR Mappings: each row's inputs. An input is its held controls and its press joined by '+', the press\n"
               "# last, then \" toggle\" for a toggle. A row's own input is its key alone (0 = Automatic); its further\n"
-              "# ones are _2 to _4 (%d = none), written for a row that differs from its game's start.\n"
-              "vr_inputs_version = 2\n",vr_mapping::Unbound);
+              "# ones are _2 to _4 (%d = none). Only what differs from the default controls is written.\n"
+              "vr_inputs_version = 3\n",vr_mapping::Unbound);
     char input[32];
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
     {
-        const auto start=vr_mapping::DefaultInputs(static_cast<GameTitle>(title+1));
+        vr_mapping::Overrides startRows{};
+        vr_mapping::Inputs start{};
+        vr_mapping::ExtraBindings startExtra{};
+        default_controls::Rows(static_cast<GameTitle>(title+1),startRows,start,startExtra);
         for(unsigned action=0;action<vr_mapping::Count;++action)
         {
             const auto& row=g_config.vr_inputs[title][action];
-            vr_mapping::FormatInput(input,row.held,g_config.vr_bindings[title][action],row.mode);
-            fprintf(f,"vr_bind_%s_%s = %s\n",weapon_interaction::kTitleKeys[title],vr_mapping::kKeys[action],input);
+            if(g_config.vr_bindings[title][action]!=startRows[action]||row.held!=start[action].held||
+               row.mode!=start[action].mode)
+            {
+                vr_mapping::FormatInput(input,row.held,g_config.vr_bindings[title][action],row.mode);
+                fprintf(f,"vr_bind_%s_%s = %s\n",weapon_interaction::kTitleKeys[title],vr_mapping::kKeys[action],input);
+            }
             if(row.more==start[action].more) continue;
             for(unsigned slot=1;slot<vr_mapping::kRowInputs;++slot)
             {
@@ -3823,18 +3850,23 @@ void ConfigSave()
         }
     }
     fprintf(f,"# The extra rows: each game's actions no row above names, their inputs (_2 to _4 further ones), each in its\n"
-        "# context; only those that differ from their default.\n");
+        "# context; only those that differ from the default controls.\n");
     for(unsigned title=0;title<weapon_interaction::kTitleCount;++title)
+    {
+        vr_mapping::Overrides startRows{};
+        vr_mapping::Inputs start{};
+        vr_mapping::ExtraBindings startExtra{};
+        default_controls::Rows(static_cast<GameTitle>(title+1),startRows,start,startExtra);
         for(unsigned action=0;action<vr_mapping::ExtraCount;++action)
-            for(unsigned slot=0;slot<vr_mapping::kRowInputs&&
-                g_config.vr_extra_bindings[title][action]!=
-                    vr_mapping::ExtraDefaults(static_cast<GameTitle>(title+1))[action];++slot)
+            for(unsigned slot=0;slot<vr_mapping::kRowInputs&&g_config.vr_extra_bindings[title][action]!=startExtra[action];
+                ++slot)
             {
                 const auto& seat=g_config.vr_extra_bindings[title][action][slot];
                 vr_mapping::FormatInput(input,seat.held,seat.press,seat.mode);
                 fprintf(f,"vr_bind_%s_%s%s = %s\n",weapon_interaction::kTitleKeys[title],vr_mapping::kExtraKeys[action],
                     vr_mapping::kControlSuffix[slot],input);
             }
+    }
     fprintf(f,"# The mod's own rows, every game's: Pause (the pause view and Start), its inputs (_2 to _4 further ones).\n");
     for(unsigned action=0;action<vr_mapping::ModCount;++action)
         for(unsigned slot=0;slot<vr_mapping::kRowInputs;++slot)

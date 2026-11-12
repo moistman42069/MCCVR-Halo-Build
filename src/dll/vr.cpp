@@ -447,6 +447,9 @@ namespace
     constexpr uint32_t kAuthoredReticleCentreProbeSize = 64;
     // Two texels of the 512 capture: below it a centroid change is noise.
     constexpr float kAuthoredReticleCentreDeadband = 2.0f / 512.0f;
+    // A move of the centre holds this many published captures first (about half a second in Halo 4).
+    constexpr uint32_t kAuthoredReticleCentreConfirm = 4;
+    AuthoredReticleCentreSettle g_authoredReticleCentreSettle{};
     bool g_authoredReticleCentreQueued = false;
     // Halo 4 publishes every frame where the floor allows it: a capture is copied aside when its readback is
     // queued, so the next frame's capture can be drawn while that readback is in flight, and the copy is what
@@ -460,10 +463,26 @@ namespace
     // The prepared-frame serial of the capture the queued centre readback copied.
     uint64_t g_authoredReticleCentreSerial = 0;
     AuthoredReticleArtCentre g_authoredReticleMeasuredCentre{};
-    // Halo 2's capture window follows its art (authored_reticle_logic.h, ReticleCaptureFollow). The follower is
-    // stepped where the centre is measured; the capture, on the thread that draws the HUD, reads the pair below.
-    ReticleCaptureFollow g_halo2ReticleFollow{};
-    std::atomic<float> g_halo2ReticleWindowX{0.0f}, g_halo2ReticleWindowY{0.0f};
+    // The capture window follows its art in Halo 2, Halo 3 and ODST (authored_reticle_logic.h, ReticleCaptureFollow;
+    // ReticleCaptureFollowsArt). The follower is stepped where the centre is measured; the capture, on the thread
+    // that draws the HUD, reads the pair below, in texels of the capture texture.
+    ReticleCaptureFollow g_reticleFollow{};
+    std::atomic<float> g_reticleWindowX{0.0f}, g_reticleWindowY{0.0f};
+    // HOW MANY CAPTURES ONE DISPLAYED FRAME TOOK, where the window follows the art (for the log). Each crosshair
+    // widget draw begins one, all into the one texture, cleared once a frame. Kept by the thread that captures:
+    // this frame's count, and its first and latest capture's raster eye and widget viewport (top, height).
+    struct ReticleCaptureTally
+    {
+        uint64_t serial = 0;
+        uint32_t count = 0;
+        int eye[2]{-1, -1};
+        float top[2]{}, height[2]{};
+    };
+    ReticleCaptureTally g_reticleTally{};
+    // For the log: the most in one frame, how many frames took more than one, and the last such frame's pair.
+    std::atomic<uint32_t> g_reticleTallyMost{0}, g_reticleTallyMulti{0};
+    std::atomic<int> g_reticleTallyEye[2]{-1, -1};
+    std::atomic<float> g_reticleTallyTop[2]{}, g_reticleTallyHeight[2]{};
     // Halo 4's capture takes in as much of the view as its art reaches (authored_reticle_logic.h,
     // ReticleCaptureFit), stepped where the centre is measured. `g_halo4ReticleZoom` is what the next capture is
     // drawn at; each capture keeps the zoom it was drawn at, the readback and the published art theirs.
@@ -504,10 +523,20 @@ namespace
     std::atomic<float> g_authoredReticleFitAcross{1.0f}, g_authoredReticleFitDown{1.0f};
     // The last capture's magnification of the raster (Halo3ReticleCaptureScale for Halo 3 and ODST).
     std::atomic<float> g_authoredReticleCaptureScale{1.0f};
-    constexpr float kHalo2ReticleFollowEngage = 32.0f;     // texels: nearer the middle than this is centred art
-    constexpr float kHalo2ReticleFollowDeadband = 6.0f;    // texels: a moved window holds the art this close
-    constexpr float kHalo2ReticleFollowLimit = 768.0f;     // view pixels: no reticle is drawn farther out
-    constexpr uint32_t kHalo2ReticleFollowBlankLimit = 8;
+    constexpr float kReticleFollowEngage = 32.0f;     // texels: nearer the middle than this is centred art
+    constexpr float kReticleFollowDeadband = 6.0f;    // texels: a moved window holds the art this close
+    constexpr float kReticleFollowLimit = 768.0f;     // texels: no reticle is drawn farther out
+    constexpr uint32_t kReticleFollowBlankLimit = 8;
+    // The titles whose capture window follows its art. Halo 2 draws a vehicle's reticle well below the view's centre;
+    // Halo 3, ODST, Reach and CE draw every crosshair below it when MCC's own crosshair location is not centred
+    // (Reach's 0.37 of the texture low and cut off at its edge, 3.9 deg below the aim point; CE's 0.40 low, 2.9 deg:
+    // headset log 2026-11-09). The setting is the player's, kept for flat play: the capture follows the art rather
+    // than the mod changing it. CE's seat lift (g_ceReticleLift) still places a driver's chevron first.
+    bool ReticleCaptureFollowsArt(GameTitle title)
+    {
+        return title == GameTitle::Halo2 || title == GameTitle::Halo3 || title == GameTitle::Halo3ODST ||
+               title == GameTitle::HaloReach || title == GameTitle::HaloCE;
+    }
     // The centre of the art now in the swapchain; invalid while it holds
     // procedural art or art nobody measured.
     AuthoredReticleArtCentre g_authoredReticlePublishedCentre{};
@@ -9744,15 +9773,15 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                         g_authoredReticleMeasuredCentre.touchesEdge ? " and was cut off by it" : "",
                         g_authoredReticleCentreZoom, g_halo4ReticleFit.zoom, g_halo4ReticleFit.widenings);
                 }
-                // Halo 2: the capture window follows the art it has just been shown.
-                if (TitleAdapter_GetActiveTitle() == GameTitle::Halo2 &&
-                    g_halo2ReticleFollow.Step(g_authoredReticleMeasuredCentre, g_authoredReticleCentreSerial,
-                                              g_preparedFrame.serial, static_cast<float>(kReticleSize),
-                                              kHalo2ReticleFollowEngage, kHalo2ReticleFollowDeadband,
-                                              kHalo2ReticleFollowLimit, kHalo2ReticleFollowBlankLimit))
+                // Halo 2, Halo 3, ODST, Reach and CE: the capture window follows the art it has just been shown.
+                if (ReticleCaptureFollowsArt(TitleAdapter_GetActiveTitle()) &&
+                    g_reticleFollow.Step(g_authoredReticleMeasuredCentre, g_authoredReticleCentreSerial,
+                                         g_preparedFrame.serial, static_cast<float>(kReticleSize),
+                                         kReticleFollowEngage, kReticleFollowDeadband,
+                                         kReticleFollowLimit, kReticleFollowBlankLimit))
                 {
-                    g_halo2ReticleWindowX.store(g_halo2ReticleFollow.x, std::memory_order_relaxed);
-                    g_halo2ReticleWindowY.store(g_halo2ReticleFollow.y, std::memory_order_relaxed);
+                    g_reticleWindowX.store(g_reticleFollow.x, std::memory_order_relaxed);
+                    g_reticleWindowY.store(g_reticleFollow.y, std::memory_order_relaxed);
                 }
             }
         }
@@ -10031,10 +10060,10 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                 g_authoredReticleGoodInk = ink;
             }
             source = g_authoredReticleGoodTexture;
-            publishedCentre = SettleAuthoredReticleArtCentre(
+            publishedCentre = g_authoredReticleCentreSettle.Step(
                 g_authoredReticlePublishedCentre,
                 g_authoredReticleMeasuredCentre,
-                kAuthoredReticleCentreDeadband);
+                kAuthoredReticleCentreDeadband, kAuthoredReticleCentreConfirm);
         }
 
         uint32_t index = 0;
@@ -15242,6 +15271,43 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
 #endif
     }
 
+    // Frames in which the right controller gave no usable pose, by cause; logged every 5 s while any frame lost
+    // it. Without that pose the arms fall back to the game's own, so a player's log can say whether the runtime
+    // stopped giving input (the sync failed or the action went inactive, as when the session is not focused) or
+    // located the controller without valid flags.
+    enum class ControllerPoseLoss : uint8_t { None, SyncFailed, Inactive, LocateFailed, NotValid, Count };
+    struct ControllerPoseLossWindow
+    {
+        uint32_t frames{}, lost[static_cast<size_t>(ControllerPoseLoss::Count)]{};
+        XrResult lastResult{XR_SUCCESS};
+        XrSpaceLocationFlags lastFlags{};
+        uint64_t startMs{};
+    };
+    ControllerPoseLossWindow g_controllerPoseLoss;
+
+    void NoteControllerPoseLoss(ControllerPoseLoss loss, XrResult result = XR_SUCCESS, XrSpaceLocationFlags flags = 0)
+    {
+        auto& w = g_controllerPoseLoss;
+        const uint64_t now = GetTickCount64();
+        if (!w.startMs) w.startMs = now;
+        ++w.frames;
+        ++w.lost[static_cast<size_t>(loss)];
+        if (loss == ControllerPoseLoss::SyncFailed || loss == ControllerPoseLoss::LocateFailed) w.lastResult = result;
+        if (loss == ControllerPoseLoss::NotValid) w.lastFlags = flags;
+        if (now - w.startMs < 5000) return;
+        const uint32_t lostFrames = w.frames - w.lost[static_cast<size_t>(ControllerPoseLoss::None)];
+        if (lostFrames)
+            LOG("Right controller: no usable pose in %u of %u frames in %.1f s (session %s): sync failed %u, "
+                "action inactive %u, locate failed %u (last %s), not valid %u (last flags 0x%llX)",
+                lostFrames, w.frames, (now - w.startMs) / 1000.0, SessionStateName(g_sessionState),
+                w.lost[static_cast<size_t>(ControllerPoseLoss::SyncFailed)],
+                w.lost[static_cast<size_t>(ControllerPoseLoss::Inactive)],
+                w.lost[static_cast<size_t>(ControllerPoseLoss::LocateFailed)], XrStr(w.lastResult),
+                w.lost[static_cast<size_t>(ControllerPoseLoss::NotValid)],
+                static_cast<unsigned long long>(w.lastFlags));
+        w = {};
+    }
+
     bool CaptureRightControllerPose(XrTime time)
     {
         g_controllerFingerSample={};
@@ -15258,8 +15324,9 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO};
         sync.countActiveActionSets = 1;
         sync.activeActionSets = &active;
-        if (XR_FAILED(xrSyncActions(g_session, &sync)))
+        if (const XrResult synced = xrSyncActions(g_session, &sync); XR_FAILED(synced))
         {
+            NoteControllerPoseLoss(ControllerPoseLoss::SyncFailed, synced);
             g_thumbrestDpadSampleMs.store(0, std::memory_order_release);
             g_supportGripPoseFresh.store(false, std::memory_order_release);
             InvalidateWeaponInteractionSample();
@@ -15272,13 +15339,19 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
         bool valid = false;
         XrSpaceVelocity velocity{XR_TYPE_SPACE_VELOCITY};
         XrSpaceLocation location{XR_TYPE_SPACE_LOCATION, &velocity};
-        if (XR_SUCCEEDED(xrGetActionStatePose(g_session, &get, &state)) && state.isActive &&
-            XR_SUCCEEDED(xrLocateSpace(g_rightAimSpace, g_localSpace, time, &location)))
+        if (!XR_SUCCEEDED(xrGetActionStatePose(g_session, &get, &state)) || !state.isActive)
+            NoteControllerPoseLoss(ControllerPoseLoss::Inactive);
+        else if (const XrResult located = xrLocateSpace(g_rightAimSpace, g_localSpace, time, &location);
+                 XR_FAILED(located))
+            NoteControllerPoseLoss(ControllerPoseLoss::LocateFailed, located);
+        else
         {
             constexpr XrSpaceLocationFlags required =
                 XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_POSITION_VALID_BIT;
             valid = (location.locationFlags & required) == required &&
                     NormalizeTrackedPose(location.pose);
+            NoteControllerPoseLoss(valid ? ControllerPoseLoss::None : ControllerPoseLoss::NotValid,
+                XR_SUCCESS, location.locationFlags);
         }
         // Left hand: position only matters (D-pad gesture), same locate path.
         bool leftValid = false;
@@ -19425,14 +19498,15 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                 // The other titles' quads are centred on the texture: the line says how
                                 // far that leaves the art from the aim point (degrees of the crosshair's
                                 // configured size, which the quad keeps at every distance).
-                                else if (reticleTitle == GameTitle::Halo2 &&
+                                else if (ReticleCaptureFollowsArt(reticleTitle) &&
                                          g_authoredReticlePublishedCentre.valid)
                                     LOG("RETICLE art centre (title %d): %+.3f right, %+.3f down of the "
                                         "texture centre = %+.2f deg right, %+.2f deg down of the aim point "
                                         "for a %.2f deg crosshair (ink %llu); the capture window follows the "
-                                        "art: it sits %+.0f px right, %+.0f px down of the view's centre "
+                                        "art: it sits %+.0f right, %+.0f down of the view's centre (texels) "
                                         "after %u moves; the latest capture's art is %.2f times as wide as "
-                                        "it is tall (ink %llu, spread %.3f across, %.3f down)",
+                                        "it is tall (ink %llu, spread %.3f across, %.3f down) and reaches "
+                                        "%.0f%% of the way to the texture's edge%s",
                                         static_cast<int>(reticleTitle),
                                         g_authoredReticlePublishedCentre.u - 0.5f,
                                         g_authoredReticlePublishedCentre.v - 0.5f,
@@ -19443,12 +19517,14 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                         g_config.crosshair_size_deg,
                                         static_cast<unsigned long long>(
                                             g_authoredReticlePublishedCentre.ink),
-                                        g_halo2ReticleFollow.x, g_halo2ReticleFollow.y,
-                                        g_halo2ReticleFollow.moves,
+                                        g_reticleFollow.x, g_reticleFollow.y,
+                                        g_reticleFollow.moves,
                                         AuthoredReticleArtAspect(g_authoredReticleLatestMeasured),
                                         static_cast<unsigned long long>(g_authoredReticleLatestMeasured.ink),
                                         g_authoredReticleLatestMeasured.spreadU,
-                                        g_authoredReticleLatestMeasured.spreadV);
+                                        g_authoredReticleLatestMeasured.spreadV,
+                                        g_authoredReticleLatestMeasured.reach * 100.0f,
+                                        g_authoredReticleLatestMeasured.touchesEdge ? " (cut off by it)" : "");
                                 else if (g_authoredReticlePublishedCentre.valid)
                                     LOG("RETICLE art centre (title %d): %+.3f right, %+.3f down of the "
                                         "texture centre = %+.2f deg right, %+.2f deg down of the aim point "
@@ -19482,6 +19558,26 @@ float4 ps_scope_linearize(VSOut i):SV_Target { return paint(i.uv,true); }
                                         g_authoredReticleCentreStaging
                                             ? "no measured art on the quad yet"
                                             : "art-centre readback unavailable");
+                                if (ReticleCaptureFollowsArt(reticleTitle))
+                                {
+                                    const uint32_t most = g_reticleTallyMost.exchange(0, std::memory_order_relaxed);
+                                    const uint32_t multi = g_reticleTallyMulti.exchange(0, std::memory_order_relaxed);
+                                    if (multi)
+                                        LOG("RETICLE captures (title %d): up to %u in one displayed frame, %u "
+                                            "frame(s) with more than one; the last such frame's first in eye %d "
+                                            "(widget viewport top %.0f, height %.0f), its latest in eye %d (top "
+                                            "%.0f, height %.0f)",
+                                            static_cast<int>(reticleTitle), most, multi,
+                                            g_reticleTallyEye[0].load(std::memory_order_relaxed),
+                                            g_reticleTallyTop[0].load(std::memory_order_relaxed),
+                                            g_reticleTallyHeight[0].load(std::memory_order_relaxed),
+                                            g_reticleTallyEye[1].load(std::memory_order_relaxed),
+                                            g_reticleTallyTop[1].load(std::memory_order_relaxed),
+                                            g_reticleTallyHeight[1].load(std::memory_order_relaxed));
+                                    else if (most)
+                                        LOG("RETICLE captures (title %d): one per displayed frame",
+                                            static_cast<int>(reticleTitle));
+                                }
                                 g_authoredReticleBlankHeld = 0;
                                 s_uploadsDone = 0;
                                 s_uploadsSkipped = 0;
@@ -21921,7 +22017,10 @@ bool VR_Halo2CompleteSynchronousMonoPair(
     {
         return false;
     }
-    VR_NoteMonoFrameRendered(GameTitle::Halo2, eye);
+    // AIM FRAME ZOOM in one pass (3D in the frame off): the core said this picture was the frame's before publishing
+    // it. Cleared here, the frame was never shown and the zoom showed nothing.
+    VR_NoteMonoFrameRendered(GameTitle::Halo2, eye,
+                             g_aimFramePicture.eye.load(std::memory_order_acquire) == eye);
     return true;
 }
 
@@ -23309,12 +23408,13 @@ void VR_DetachGamePresentation()
     g_authoredReticleUploadedSerial = 0;
     g_reticleContainsAuthored = false;
     g_authoredReticlePublishedCentre = {};
+    g_authoredReticleCentreSettle = {};
     g_authoredReticleLatestMeasured = {};
     g_authoredReticleMeasuredCentre = {};
     g_authoredReticleCentreQueued = false;
-    g_halo2ReticleFollow = {};
-    g_halo2ReticleWindowX.store(0.0f, std::memory_order_relaxed);
-    g_halo2ReticleWindowY.store(0.0f, std::memory_order_relaxed);
+    g_reticleFollow = {};
+    g_reticleWindowX.store(0.0f, std::memory_order_relaxed);
+    g_reticleWindowY.store(0.0f, std::memory_order_relaxed);
     g_halo4ReticleFit = {};
     g_halo4ReticleZoom.store(1.0f, std::memory_order_relaxed);
     g_authoredReticleCaptureZoom.store(1.0f, std::memory_order_relaxed);
@@ -26106,6 +26206,30 @@ static bool BeginAuthoredReticleCaptureInternal(
             D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
         g_context->RSGetScissorRects(&saved.scissorCount, saved.scissors);
     }
+    if (publishAuthored && saved.viewportCount && ReticleCaptureFollowsArt(captureTitle))
+    {
+        auto& tally = g_reticleTally;
+        if (tally.serial != serial)
+            tally = {serial};
+        const uint32_t slot = tally.count ? 1u : 0u;
+        tally.eye[slot] = g_rasterEye.load(std::memory_order_relaxed);
+        tally.top[slot] = saved.viewports[0].TopLeftY;
+        tally.height[slot] = saved.viewports[0].Height;
+        ++tally.count;
+        if (tally.count > g_reticleTallyMost.load(std::memory_order_relaxed))
+            g_reticleTallyMost.store(tally.count, std::memory_order_relaxed);
+        if (tally.count >= 2)
+        {
+            if (tally.count == 2)
+                g_reticleTallyMulti.fetch_add(1, std::memory_order_relaxed);
+            for (int i = 0; i < 2; ++i)
+            {
+                g_reticleTallyEye[i].store(tally.eye[i], std::memory_order_relaxed);
+                g_reticleTallyTop[i].store(tally.top[i], std::memory_order_relaxed);
+                g_reticleTallyHeight[i].store(tally.height[i], std::memory_order_relaxed);
+            }
+        }
+    }
 
     D3D11_VIEWPORT captureViewport{};
     // Halo 3/ODST/Reach hook a widget-scoped draw, so the viewport already
@@ -26194,12 +26318,13 @@ static bool BeginAuthoredReticleCaptureInternal(
         (static_cast<float>(kReticleSize) - captureViewport.Width) * 0.5f;
     captureViewport.TopLeftY =
         (static_cast<float>(kReticleSize) - captureViewport.Height) * 0.5f;
-    // Halo 2 draws some reticles away from the view's centre (a vehicle's sits well below it); its window is
-    // cut about the point the art was last measured at instead (ReticleCaptureFollow).
-    if (captureTitle == GameTitle::Halo2)
+    // Halo 2 draws some reticles away from the view's centre (a vehicle's sits well below it), and Halo 3, ODST,
+    // Reach and CE every crosshair when MCC's crosshair location is not centred; their window is cut about the point the art was
+    // last measured at instead (ReticleCaptureFollow).
+    if (ReticleCaptureFollowsArt(captureTitle))
     {
-        captureViewport.TopLeftX -= g_halo2ReticleWindowX.load(std::memory_order_relaxed);
-        captureViewport.TopLeftY -= g_halo2ReticleWindowY.load(std::memory_order_relaxed);
+        captureViewport.TopLeftX -= g_reticleWindowX.load(std::memory_order_relaxed);
+        captureViewport.TopLeftY -= g_reticleWindowY.load(std::memory_order_relaxed);
     }
     if (ceCapture)
         captureViewport.TopLeftY += captureViewport.Height * g_ceReticleLift.load(std::memory_order_relaxed);
@@ -26940,9 +27065,10 @@ bool VR_MonoRenderThisFrame(GameTitle title, float coverFov[4])
 // The one pass of a mono frame of `title` has been drawn and captured as `eye`: its picture is both eyes' for this
 // frame. What the present asks of a pair before it shows one (an image for each eye, each eye's frame serial) is
 // answered for the other eye by this one's.
-void VR_NoteMonoFrameRendered(GameTitle title, int eye)
+void VR_NoteMonoFrameRendered(GameTitle title, int eye, bool aimFramePicture)
 {
-    g_aimFramePicture.eye.store(-1, std::memory_order_release);
+    if (!aimFramePicture)
+        g_aimFramePicture.eye.store(-1, std::memory_order_release);
     if (eye != 0 && eye != 1)
         return;
     const int other = 1 - eye;

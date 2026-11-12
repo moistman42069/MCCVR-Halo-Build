@@ -628,7 +628,7 @@ namespace
     } g_mappingPage;
     int MappingTitle()
     {
-        const auto active=TitleAdapter_GetActiveTitle();
+        const auto active=Game_ControlsTitle(TitleAdapter_GetActiveTitle());
         const int activeIndex=weapon_interaction::TitleIndex(active);
         if(active!=g_mappingPage.previousTitle&&activeIndex>=0) g_mappingPage.selectedTitle=activeIndex;
         g_mappingPage.previousTitle=active;
@@ -1296,6 +1296,10 @@ namespace
         }
         ImGui::TextDisabled("Raw by default. Try 5%% only for micro-jitter; capped at 10%% for comfort.");
         ImGui::Spacing();
+        changed |= ImGui::Checkbox("Halo 2 camera shake##headmotion", &g_config.halo2_camera_shake);
+        ImGui::TextDisabled("OFF (default): your view keeps still when you fire or something explodes, as in the "
+                            "other games. ON: Halo 2's own camera shake.");
+        ImGui::Spacing();
         ImGui::Separator();
         }
         if (SectionHeader("Sound##section", ImGuiTreeNodeFlags_None))
@@ -1617,7 +1621,7 @@ namespace
             int& selectedTitle=g_mappingPage.selectedTitle;
             auto& moreOpen=g_mappingPage.moreOpen;
             auto& optionsOpen=g_mappingPage.optionsOpen;
-            const int activeIndex=weapon_interaction::TitleIndex(TitleAdapter_GetActiveTitle());
+            const int activeIndex=weapon_interaction::TitleIndex(Game_ControlsTitle(TitleAdapter_GetActiveTitle()));
             ImGui::Text("Detected left: %s",VR_ControllerProfileName(true));
             ImGui::Text("Detected right: %s",VR_ControllerProfileName(false));
             changed|=ImGui::Checkbox("Remap buttons (off: every button is the game's own)",&g_config.vr_action_mapping);
@@ -1671,10 +1675,10 @@ namespace
                 if(g_config.vr_bindings[selectedTitle][action]==vr_mapping::Automatic)
                 {
                     if(haveBindings)
-                        ImGui::TextDisabled("The game has this on: %s",
+                        ImGui::TextDisabled("Your MCC layout has this on: %s",
                             vr_mapping::kSourceNames[vr_mapping::LayoutSource(bindings[action])]);
                     else
-                        ImGui::TextDisabled("Follows the game's own layout.");
+                        ImGui::TextDisabled("Follows your MCC controller layout for this game.");
                 }
                 if(haveBindings&&!bindings[action]) ImGui::TextDisabled("No native action binding available in this title.");
                 if(MoreInputsList(row.more.data(),vr_mapping::kMoreInputs,moreOpen[selectedTitle][action],
@@ -1688,8 +1692,8 @@ namespace
                 }
                 ImGui::PopID();
             }
-            // The extra rows, under where each counts: inputs as a row has. Automatic leaves the action on the game's
-            // own button, pressed whenever another row sends that button.
+            // The extra rows, under where each counts: inputs as a row has. Automatic follows the player's MCC layout
+            // (vr_mapping::EffectiveExtraBindings), as an action row's does.
             static constexpr const char* kContextNotes[static_cast<unsigned>(vr_mapping::ExtraContext::Count)]{
                 "In a vehicle seat: these press the game's own button for the action, beside whatever the rows above "
                 "press. In Halo 3, ODST, Reach and Halo 4, where that button also carries an action on other controls "
@@ -1706,7 +1710,8 @@ namespace
                 bool noted=false;
                 for(unsigned action=0;action<vr_mapping::ExtraCount;++action)
                 {
-                    if(static_cast<unsigned>(vr_mapping::kExtraContexts[action])!=context) continue;
+                    if(static_cast<unsigned>(vr_mapping::kExtraContexts[action])!=context||
+                       vr_mapping::RetiredExtra(static_cast<vr_mapping::ExtraAction>(action))) continue;
                     if(!noted) {SettingGap();ImGui::TextWrapped("%s",kContextNotes[context]);noted=true;}
                     const auto extraAction=static_cast<vr_mapping::ExtraAction>(action);
                     const char* name=vr_mapping::ExtraName(selectedGame,extraAction);
@@ -1740,10 +1745,10 @@ namespace
                     if(row[0].press==vr_mapping::Automatic)
                     {
                         if(haveExtra&&extraBindings[action])
-                            ImGui::TextDisabled("The game has this on: %s",
+                            ImGui::TextDisabled("Your MCC layout has this on: %s",
                                 vr_mapping::kSourceNames[vr_mapping::LayoutSource(extraBindings[action])]);
                         else
-                            ImGui::TextDisabled("Stays on the game's own button.");
+                            ImGui::TextDisabled("Follows your MCC controller layout for this game.");
                     }
                     else
                         extraChanged|=InputOptions(row[0].held,row[0].mode,open[0]);
@@ -1759,9 +1764,9 @@ namespace
             }
             if(ImGui::Button("Reset this game's mappings"))
             {
-                g_config.vr_bindings[selectedTitle]={};
-                g_config.vr_inputs[selectedTitle]=vr_mapping::DefaultInputs(selectedGame);
-                g_config.vr_extra_bindings[selectedTitle]=vr_mapping::ExtraDefaults(selectedGame);
+                // The default controls' rows, never the player's flat layout.
+                default_controls::Rows(selectedGame,g_config.vr_bindings[selectedTitle],g_config.vr_inputs[selectedTitle],
+                    g_config.vr_extra_bindings[selectedTitle]);
                 for(int& open:moreOpen[selectedTitle]) open=0;
                 changed=true;
             }
@@ -3170,8 +3175,8 @@ namespace
         {
             ImGui::Indent();
             changed |= ImGui::Checkbox("3D in the frame##aimframe", &g_config.aim_frame_stereo);
-            ImGui::TextDisabled("ON (default): each eye sees its own picture of the zoomed view. OFF: one flat "
-                                "picture for both eyes, drawn once.");
+            ImGui::TextDisabled("ON: each eye sees its own picture of the zoomed view. OFF (default): one flat "
+                                "picture for both eyes, drawn once, which is faster.");
             if (g_config.aim_frame_stereo)
             {
                 changed |= vr_menu::SliderFloat("3D strength##aimframe", &g_config.aim_frame_3d_strength,
