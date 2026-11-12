@@ -1510,8 +1510,9 @@ struct Config
     // found feels like the flat game's): the tester's settings (2026-10-30).
     bool aim_frame_zoom = true;
     // 3D inside the frame: the two eye passes are drawn along the aim and each eye sees its own picture in the
-    // frame (the cost of the ordinary 3D view). 0 = one flat picture for both eyes.
-    bool aim_frame_stereo = true;
+    // frame (the cost of the ordinary 3D view). 0 = one flat picture for both eyes, drawn once. Off by default: the
+    // depth adds little to a zoomed view, and one picture keeps the zoom at the mono view's frame rate (2026-11-11).
+    bool aim_frame_stereo = false;
     // How far apart the frame's two eyes are, as a multiple of your own eye spacing (binoculars set their lenses
     // wider for the same reason): far targets show little depth at real spacing. The two pictures meet at the
     // point you aim at, so it and the game's crosshair sit at the frame's own depth. 1 to 10.

@@ -72,7 +72,7 @@ int main()
     g_config.host_ui_panel_width_m = 3.3f;
     g_config.host_ui_panel_distance_m = 1.7f;
     g_config.aim_frame_zoom = false;
-    g_config.aim_frame_stereo = false;
+    g_config.aim_frame_stereo = true;
     g_config.aim_frame_3d_strength = 3.5f;
     g_config.aim_frame_size_deg[1] = 70.0f;
     g_config.aim_frame_strength[0] = 2.0f;
@@ -105,7 +105,7 @@ int main()
     Check(g_config.gun_forward_m==-.22f && g_config.gun_right_m==.08f && g_config.gun_up_m==-.09f,
         "right offsets remain independent after save/reload");
     Check(!g_config.aim_frame_zoom, "aim_frame_zoom is remembered");
-    Check(!g_config.aim_frame_stereo, "aim_frame_stereo is remembered");
+    Check(g_config.aim_frame_stereo, "aim_frame_stereo is remembered");
     Check(g_config.aim_frame_3d_strength > 3.49f && g_config.aim_frame_3d_strength < 3.51f,
           "aim_frame_3d_strength is remembered");
     Check(g_config.aim_frame_size_deg[1] > 69.9f && g_config.aim_frame_size_deg[1] < 70.1f,

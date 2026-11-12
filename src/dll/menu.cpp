@@ -3171,8 +3171,8 @@ namespace
         {
             ImGui::Indent();
             changed |= ImGui::Checkbox("3D in the frame##aimframe", &g_config.aim_frame_stereo);
-            ImGui::TextDisabled("ON (default): each eye sees its own picture of the zoomed view. OFF: one flat "
-                                "picture for both eyes, drawn once.");
+            ImGui::TextDisabled("ON: each eye sees its own picture of the zoomed view. OFF (default): one flat "
+                                "picture for both eyes, drawn once, which is faster.");
             if (g_config.aim_frame_stereo)
             {
                 changed |= vr_menu::SliderFloat("3D strength##aimframe", &g_config.aim_frame_3d_strength,
